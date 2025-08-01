@@ -17,7 +17,7 @@ test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # Load trained model
 model = RestormerCrowdFlow().to(device)
-model.load_state_dict(torch.load('checkpoints/restormer_best.pth', map_location=device))  # ✅ Fixed path
+model.load_state_dict(torch.load('checkpoints/restormer_best.pth', map_location=device))  
 model.eval()
 
 # Create predictions directory
