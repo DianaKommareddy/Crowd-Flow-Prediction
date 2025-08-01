@@ -11,19 +11,19 @@ import numpy as np
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# Load test dataset from 'Test Dataset'
-test_dataset = CrowdFlowDataset(root_dir='Test Dataset')
+# Load test dataset
+test_dataset = CrowdFlowDataset(root_dir='Test Dataset')  # Make sure this path is correct
 test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # Load trained model
 model = RestormerCrowdFlow().to(device)
-model.load_state_dict(torch.load('checkpoints/restormer_epoch20.pth'))
+model.load_state_dict(torch.load('checkpoints/restormer_best.pth', map_location=device))  # ✅ Fixed path
 model.eval()
 
-# Directory for saving predictions
+# Create predictions directory
 os.makedirs("predictions", exist_ok=True)
 
-# Inference and Visualization
+# Inference & save predictions
 print("\n🔍 Running inference and saving comparison images...")
 with torch.no_grad():
     for idx, (inputs, targets) in enumerate(test_loader):
@@ -47,7 +47,7 @@ with torch.no_grad():
         plt.close()
         print(f"✅ Saved: predictions/compare_{idx}.png")
 
-# Metric Calculation
+# Evaluation metrics
 mse_list = []
 ssim_list = []
 
