@@ -83,7 +83,7 @@ for epoch in range(epochs):
     # Save the best model
     if avg_val_loss < best_val_loss:
         best_val_loss = avg_val_loss
-        torch.save(model.state_dict(), 'checkpoints/restormer_best.pth')
+        torch.save(model.state_dict(), f'checkpoints/restormer_best_epoch_{epoch+1}.pth')
         print("💾 Best model saved!")
 
 print("\n🎉 Training complete!")
