@@ -17,14 +17,12 @@ print(f"Using device: {device}")
 # ───────────────────────────────────────
 dataset = CrowdFlowDataset(root_dir='dataset')
 
-# Split into training and validation sets
 val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-# Dataloaders
-batch_size = 4  # ⬅️ Lowered to reduce GPU memory (adjust if needed)
+batch_size = 4
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
@@ -36,15 +34,26 @@ criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
 # ───────────────────────────────────────
-# 💾 Training Setup
+# 💾 Resume from Checkpoint (if any)
 # ───────────────────────────────────────
-os.makedirs("checkpoints", exist_ok=True)
+checkpoint_path = 'checkpoints/restormer_latest.pth'
+start_epoch = 0
 best_val_loss = float('inf')
-epochs = 40  
+
+if os.path.exists(checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    start_epoch = checkpoint['epoch']
+    best_val_loss = checkpoint['val_loss']
+    print(f"✅ Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
+
 # ───────────────────────────────────────
 # 🔁 Training Loop
 # ───────────────────────────────────────
-for epoch in range(epochs):
+epochs = 40
+
+for epoch in range(start_epoch, epochs):
     print(f"\n🔁 Epoch [{epoch + 1}/{epochs}]")
     model.train()
     train_loss = 0.0
@@ -80,10 +89,24 @@ for epoch in range(epochs):
     avg_val_loss = val_loss / len(val_loader)
     print(f"✅ Validation Loss: {avg_val_loss:.6f}")
 
-    # Save the best model
+    # Save best model
     if avg_val_loss < best_val_loss:
         best_val_loss = avg_val_loss
-        torch.save(model.state_dict(), f'checkpoints/restormer_best_epoch_{epoch+1}.pth')
-        print("💾 Best model saved!")
+        best_path = f'checkpoints/restormer_best_epoch_{epoch + 1}.pth'
+        torch.save({
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'val_loss': best_val_loss
+        }, best_path)
+        print(f"💾 Best model saved at {best_path}")
+
+    # Save latest model (always)
+    torch.save({
+        'epoch': epoch + 1,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_loss': best_val_loss
+    }, checkpoint_path)
 
 print("\n🎉 Training complete!")
