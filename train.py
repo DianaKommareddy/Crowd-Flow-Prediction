@@ -36,7 +36,7 @@ optimizer = optim.Adam(model.parameters(), lr=1e-4)
 # ───────────────────────────────────────
 # 💾 Resume from Checkpoint (if any)
 # ───────────────────────────────────────
-checkpoint_path = 'checkpoints/restormer_best.pth'
+checkpoint_path = 'checkpoints/restormer_latest.pth' 
 start_epoch = 0
 best_val_loss = float('inf')
 
