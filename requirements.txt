@@ -9,3 +9,6 @@ scipy
 scikit-learn
 einops
 pyyaml
+timm
+matplotlib 
+scikit-image
