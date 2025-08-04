@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from dataset import CrowdFlowDataset
-from models.restormer_crowd_flow import RestormerCrowdFlow
+from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
 import os
 from datetime import datetime
 from skimage.metrics import structural_similarity as ssim
@@ -75,7 +75,7 @@ if not os.path.exists(log_file) or start_epoch == 0:
 # ───────────────────────────────────────
 # 🔁 Training Loop
 # ───────────────────────────────────────
-epochs = 40
+epochs = 10
 
 for epoch in range(start_epoch, epochs):
     print(f"\n🔁 Epoch [{epoch + 1}/{epochs}]")
