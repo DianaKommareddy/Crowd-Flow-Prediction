@@ -9,6 +9,7 @@ from datetime import datetime
 from skimage.metrics import structural_similarity as ssim
 import numpy as np
 import csv
+from torch.optim.lr_scheduler import StepLR  # ✅ New import for LR scheduler
 
 # ───────────────────────────────────────
 # ⚙️ Device Setup
@@ -38,6 +39,9 @@ criterion = nn.MSELoss()
 mae_fn = nn.L1Loss()
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
+# ✅ Learning rate scheduler
+scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
+
 # ───────────────────────────────────────
 # 💾 Checkpoint Setup
 # ───────────────────────────────────────
@@ -66,7 +70,7 @@ log_file = os.path.join(log_dir, 'training_log.csv')
 if not os.path.exists(log_file) or start_epoch == 0:
     with open(log_file, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['Epoch', 'Train_MSE_Avg', 'Train_MSE_Min', 'Train_MSE_Max', 'Val_MSE', 'Val_MAE', 'Val_SSIM'])
+        writer.writerow(['Epoch', 'Train_MSE_Avg', 'Train_MSE_Min', 'Train_MSE_Max', 'Val_MSE', 'Val_MAE', 'Val_SSIM', 'LR'])
 
 # ───────────────────────────────────────
 # 🔁 Training Loop
@@ -160,6 +164,7 @@ for epoch in range(start_epoch, epochs):
     # ────────────────────────────────
     # 📝 Append to Log
     # ────────────────────────────────
+    current_lr = scheduler.get_last_lr()[0]
     with open(log_file, 'a', newline='') as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -169,7 +174,12 @@ for epoch in range(start_epoch, epochs):
             f"{max_train_loss:.6f}",
             f"{avg_val_loss:.6f}",
             f"{avg_val_mae:.6f}",
-            f"{avg_val_ssim:.4f}"
+            f"{avg_val_ssim:.4f}",
+            f"{current_lr:.6f}"
         ])
+
+    # 🔄 Step the scheduler
+    scheduler.step()
+    print(f"🔧 Learning Rate: {current_lr:.6f}")
 
 print("\n🎉 Training complete!")
