@@ -63,5 +63,19 @@ python test.py --model_path ./checkpoints/best_model.pt --data_dir ./dataset
 
 This will load the trained model and generate flow predictions. Output predictions will be saved to the predictions/ folder inside the working directory.
 
+---
+
+## References
+
+This project builds upon the following foundational works:
+
+**Restormer: Efficient Transformer for High-Resolution Image Restoration**
+Syed Waqas Zamir, Aditya Arora, Salman Khan, Munawar Hayat, Fahad Shahbaz Khan, Ming-Hsuan Yang, Ling Shao
+[arXiv | GitHub](https://arxiv.org/abs/2111.09881 | https://github.com/swz30/Restormer)
+
+**Laying the Foundations of Deep Long-Term Crowd Flow Prediction**
+Seonguk Seo, Seunghoon Hong, Bohyung Han
+[Springer Link (ECCV 2020) | GitHub](https://link.springer.com/chapter/10.1007/978-3-030-58526-6_42 | https://github.com/SSSohn/LTCF)
+
 
 
