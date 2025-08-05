@@ -16,7 +16,7 @@ print(f"Using device: {device}")
 # ───────────────────────────────────────
 # 📁 Load Test Dataset
 # ───────────────────────────────────────
-test_dataset = CrowdFlowDataset(root_dir='Test Dataset')  # Update path if needed
+test_dataset = CrowdFlowDataset(root_dir='Test Dataset')  # Make sure this path is correct
 test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # ───────────────────────────────────────
@@ -24,8 +24,8 @@ test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 # ───────────────────────────────────────
 model = RestormerCrowdFlow().to(device)
 
-# Load full checkpoint dictionary
-checkpoint = torch.load('checkpoints/restormer_best.pth', map_location=device)
+# Load full checkpoint dictionary — using weights_only=False for PyTorch 2.6+
+checkpoint = torch.load('checkpoints/restormer_best.pth', map_location=device, weights_only=False)
 
 # Load weights into model
 model.load_state_dict(checkpoint['model_state_dict'])
@@ -48,7 +48,7 @@ with torch.no_grad():
         pred = outputs.squeeze().cpu().numpy()
         gt = targets.squeeze().cpu().numpy()
 
-        # Optional normalization if needed
+        # Optional normalization if your model outputs 0-255
         # pred = pred / 255.0
         # gt = gt / 255.0
 
@@ -81,7 +81,7 @@ with torch.no_grad():
         pred = outputs.squeeze().cpu().numpy()
         gt = targets.squeeze().cpu().numpy()
 
-        # Optional normalization if needed
+        # Optional normalization if your model outputs 0-255
         # pred = pred / 255.0
         # gt = gt / 255.0
 
