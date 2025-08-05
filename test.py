@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from dataset import CrowdFlowDataset
-from models.restormer_crowd_flow import RestormerCrowdFlow
+from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
 import os
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
