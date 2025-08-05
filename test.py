@@ -1,29 +1,37 @@
 import torch
 from torch.utils.data import DataLoader
 from dataset import CrowdFlowDataset
-from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
 import os
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
 import numpy as np
 
-# Setup
+# ───────────────────────────────────────
+# ⚙️ Device Setup
+# ───────────────────────────────────────
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# Load test dataset
-test_dataset = CrowdFlowDataset(root_dir='Test Dataset')  # Make sure this path is correct
+# ───────────────────────────────────────
+# 📁 Load Test Dataset
+# ───────────────────────────────────────
+test_dataset = CrowdFlowDataset(root_dir='Test Dataset')  # Update path if needed
 test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-# Load trained model
-model = RestormerCrowdFlow().to(device)
-model.load_state_dict(torch.load('checkpoints/restormer_best.pth', map_location=device, weights_only=False))
+# ───────────────────────────────────────
+# 📦 Load TorchScript Model
+# ───────────────────────────────────────
+model = torch.jit.load("checkpoints/restormer_best.pth", map_location=device)
 model.eval()
 
-# Create predictions directory
+# ───────────────────────────────────────
+# 📂 Create Output Directory
+# ───────────────────────────────────────
 os.makedirs("predictions", exist_ok=True)
 
-# Inference & save predictions
+# ───────────────────────────────────────
+# 🔍 Inference and Save Side-by-Side Plots
+# ───────────────────────────────────────
 print("\n🔍 Running inference and saving comparison images...")
 with torch.no_grad():
     for idx, (inputs, targets) in enumerate(test_loader):
@@ -32,6 +40,10 @@ with torch.no_grad():
 
         pred = outputs.squeeze().cpu().numpy()
         gt = targets.squeeze().cpu().numpy()
+
+        # Optional normalization if needed
+        # pred = pred / 255.0
+        # gt = gt / 255.0
 
         fig, axs = plt.subplots(1, 2, figsize=(6, 3))
         axs[0].imshow(gt, cmap='gray')
@@ -47,7 +59,9 @@ with torch.no_grad():
         plt.close()
         print(f"✅ Saved: predictions/compare_{idx}.png")
 
-# Evaluation metrics
+# ───────────────────────────────────────
+# 📊 Evaluate with MSE and SSIM
+# ───────────────────────────────────────
 mse_list = []
 ssim_list = []
 
@@ -59,6 +73,10 @@ with torch.no_grad():
 
         pred = outputs.squeeze().cpu().numpy()
         gt = targets.squeeze().cpu().numpy()
+
+        # Optional normalization if needed
+        # pred = pred / 255.0
+        # gt = gt / 255.0
 
         mse = np.mean((pred - gt) ** 2)
         ssim_val = ssim(pred, gt, data_range=1.0)
