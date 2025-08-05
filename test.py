@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from dataset import CrowdFlowDataset
+from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
 import os
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
@@ -19,9 +20,15 @@ test_dataset = CrowdFlowDataset(root_dir='Test Dataset')  # Update path if neede
 test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # ───────────────────────────────────────
-# 📦 Load TorchScript Model
+# 📦 Load Model and Checkpoint
 # ───────────────────────────────────────
-model = torch.jit.load("checkpoints/restormer_best.pth", map_location=device)
+model = RestormerCrowdFlow().to(device)
+
+# Load full checkpoint dictionary
+checkpoint = torch.load('checkpoints/restormer_best.pth', map_location=device)
+
+# Load weights into model
+model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 
 # ───────────────────────────────────────
@@ -30,7 +37,7 @@ model.eval()
 os.makedirs("predictions", exist_ok=True)
 
 # ───────────────────────────────────────
-# 🔍 Inference and Save Side-by-Side Plots
+# 🔍 Inference and Save Comparison Images
 # ───────────────────────────────────────
 print("\n🔍 Running inference and saving comparison images...")
 with torch.no_grad():
