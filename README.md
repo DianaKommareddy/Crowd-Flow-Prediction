@@ -43,20 +43,23 @@ We use a modified **Restormer**, originally designed for image restoration, to h
 
 ### 1. Install Requirements
 
-```bash
+<pre lang="md">
 pip install -r requirements.txt
+</pre>
 
-**### 2. Train the Model**
+### 2. Train the Model
 
-```bash
+<pre lang="md">
 python train.py --data_dir ./dataset --epochs 50 --batch_size 8
+</pre>
 
 This will train the Restormer-based model on your dataset using the provided Agent, Environment, and Goal maps. Checkpoints will be saved to the checkpoints/ directory by default.
 
-**###3. Test the Model**
+### 3. Test the Model
 
-```bash
+<pre lang="md">
 python test.py --model_path ./checkpoints/best_model.pt --data_dir ./dataset
+</pre>
 
 This will load the trained model and generate flow predictions. Output predictions will be saved to the predictions/ folder inside the working directory.
 
