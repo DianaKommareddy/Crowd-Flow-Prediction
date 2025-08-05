@@ -2,6 +2,7 @@
 This project uses a transformer-based model called Restormer to predict how crowds move in busy scenes. It takes in the positions of agents, the layout of the environment—including walkable and non-walkable areas—and the agents’ goals. Based on this information, the model learns to estimate the likely movement patterns and generates a flow map of the crowd.
 
 ## Project Structure
+```bash
 crowd-flow-prediction-using-restormer/
 ├── Test Dataset/            # test dataset
 │   ├── A/                   # Agent maps
