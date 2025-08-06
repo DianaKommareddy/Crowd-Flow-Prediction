@@ -3,6 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
+# Optional: for DropPath regularization
+try:
+    from timm.models.layers import DropPath
+except ImportError:
+    DropPath = nn.Identity
 
 # Choose your activation function here
 def get_activation(name="mish"):
@@ -32,12 +37,13 @@ class LayerNorm(nn.Module):
 
 
 class FeedForward(nn.Module):
-    def __init__(self, dim, expansion=4, activation="mish"):
+    def __init__(self, dim, expansion=4, activation="mish", dropout=0.1):
         super().__init__()
         hidden_dim = dim * expansion
         self.net = nn.Sequential(
             nn.Conv2d(dim, hidden_dim, 1),
             get_activation(activation),
+            nn.Dropout(dropout),
             nn.Conv2d(hidden_dim, dim, 1)
         )
 
@@ -46,12 +52,15 @@ class FeedForward(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, heads=8):
+    def __init__(self, dim, heads=8, dropout=0.1):
         super().__init__()
         self.heads = heads
         self.scale = (dim // heads) ** -0.5
         self.qkv = nn.Conv2d(dim, dim * 3, 1, bias=False)
-        self.proj = nn.Conv2d(dim, dim, 1)
+        self.proj = nn.Sequential(
+            nn.Conv2d(dim, dim, 1),
+            nn.Dropout(dropout)
+        )
 
     def forward(self, x):
         B, C, H, W = x.shape
@@ -65,16 +74,17 @@ class Attention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, dim, heads=8, activation="mish"):
+    def __init__(self, dim, heads=8, activation="mish", dropout=0.1, drop_path=0.1):
         super().__init__()
         self.norm1 = LayerNorm(dim)
-        self.attn = Attention(dim, heads)
+        self.attn = Attention(dim, heads, dropout)
         self.norm2 = LayerNorm(dim)
-        self.ffn = FeedForward(dim, activation=activation)
+        self.ffn = FeedForward(dim, activation=activation, dropout=dropout)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
     def forward(self, x):
-        x = x + self.attn(self.norm1(x))
-        x = x + self.ffn(self.norm2(x))
+        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.ffn(self.norm2(x)))
         return x
 
 
@@ -105,27 +115,27 @@ class Upsample(nn.Module):
 
 
 class SharpRestormer(nn.Module):
-    def __init__(self, in_channels=9, out_channels=1, dim=64, heads=8, activation="mish"):
+    def __init__(self, in_channels=9, out_channels=1, dim=64, heads=8, activation="mish", dropout=0.1, drop_path=0.1, num_blocks=(2, 2, 4, 2, 2)):
         super().__init__()
         self.embedding = nn.Conv2d(in_channels, dim, 3, 1, 1)
 
-        self.encoder1 = nn.Sequential(*[TransformerBlock(dim, heads, activation) for _ in range(2)])
+        self.encoder1 = nn.Sequential(*[TransformerBlock(dim, heads, activation, dropout, drop_path) for _ in range(num_blocks[0])])
         self.down1 = Downsample(dim, activation)
 
-        self.encoder2 = nn.Sequential(*[TransformerBlock(dim * 2, heads, activation) for _ in range(2)])
+        self.encoder2 = nn.Sequential(*[TransformerBlock(dim * 2, heads, activation, dropout, drop_path) for _ in range(num_blocks[1])])
         self.down2 = Downsample(dim * 2, activation)
 
-        self.latent = nn.Sequential(*[TransformerBlock(dim * 4, heads, activation) for _ in range(4)])
+        self.latent = nn.Sequential(*[TransformerBlock(dim * 4, heads, activation, dropout, drop_path) for _ in range(num_blocks[2])])
 
         self.up2 = Upsample(dim * 4, dim * 2, activation)
-        self.decoder2 = nn.Sequential(*[TransformerBlock(dim * 2, heads, activation) for _ in range(2)])
+        self.decoder2 = nn.Sequential(*[TransformerBlock(dim * 2, heads, activation, dropout, drop_path) for _ in range(num_blocks[3])])
 
         self.up1 = Upsample(dim * 2, dim, activation)
-        self.decoder1 = nn.Sequential(*[TransformerBlock(dim, heads, activation) for _ in range(2)])
+        self.decoder1 = nn.Sequential(*[TransformerBlock(dim, heads, activation, dropout, drop_path) for _ in range(num_blocks[4])])
 
         self.out_head = nn.Sequential(
             nn.Conv2d(dim, out_channels, 1),
-            nn.Sigmoid()  # Clamp between 0 and 1
+            nn.Sigmoid()
         )
 
     def forward(self, x):
