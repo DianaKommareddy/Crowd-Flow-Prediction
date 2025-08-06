@@ -16,18 +16,14 @@ print(f"Using device: {device}")
 # ───────────────────────────────────────
 # 📁 Load Test Dataset
 # ───────────────────────────────────────
-test_dataset = CrowdFlowDataset(root_dir='Test Dataset')  # Make sure this path is correct
+test_dataset = CrowdFlowDataset(root_dir='Test Dataset')
 test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # ───────────────────────────────────────
 # 📦 Load Model and Checkpoint
 # ───────────────────────────────────────
 model = RestormerCrowdFlow().to(device)
-
-# Load full checkpoint dictionary — using weights_only=False for PyTorch 2.6+
-checkpoint = torch.load('checkpoints/restormer_best.pth', map_location=device, weights_only=False)
-
-# Load weights into model
+checkpoint = torch.load('checkpoints/restormer_best.pth', map_location=device)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 
@@ -48,10 +44,11 @@ with torch.no_grad():
         pred = outputs.squeeze().cpu().numpy()
         gt = targets.squeeze().cpu().numpy()
 
-        # Optional normalization if your model outputs 0-255
-        # pred = pred / 255.0
-        # gt = gt / 255.0
+        # 🔧 Clamp values to ensure safe display and metrics
+        pred = np.clip(pred, 0, 1)
+        gt = np.clip(gt, 0, 1)
 
+        # 🖼 Plot and save side-by-side image
         fig, axs = plt.subplots(1, 2, figsize=(6, 3))
         axs[0].imshow(gt, cmap='gray')
         axs[0].set_title('Ground Truth')
@@ -81,9 +78,9 @@ with torch.no_grad():
         pred = outputs.squeeze().cpu().numpy()
         gt = targets.squeeze().cpu().numpy()
 
-        # Optional normalization if your model outputs 0-255
-        # pred = pred / 255.0
-        # gt = gt / 255.0
+        # 🔧 Ensure valid range and float32 dtype
+        pred = np.clip(pred.astype(np.float32), 0, 1)
+        gt = np.clip(gt.astype(np.float32), 0, 1)
 
         mse = np.mean((pred - gt) ** 2)
         ssim_val = ssim(pred, gt, data_range=1.0)
@@ -91,5 +88,6 @@ with torch.no_grad():
         mse_list.append(mse)
         ssim_list.append(ssim_val)
 
+# 📈 Print final metrics
 print(f"\n📈 Average MSE: {np.mean(mse_list):.6f}")
 print(f"📈 Average SSIM: {np.mean(ssim_list):.4f}")
