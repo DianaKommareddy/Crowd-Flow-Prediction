@@ -5,11 +5,55 @@ from torch.utils.data import DataLoader, random_split
 from dataset import CrowdFlowDataset
 from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
 import os
-from datetime import datetime
-from skimage.metrics import structural_similarity as ssim
 import numpy as np
-import csv
-from torch.optim.lr_scheduler import StepLR  # ✅ New import for LR scheduler
+from torch.optim.lr_scheduler import StepLR
+import pytorch_ssim  # ✅ SSIM Loss
+
+# ───────────────────────────────────────
+# ⏹️ EarlyStopping Utility
+# ───────────────────────────────────────
+class EarlyStopping:
+    def __init__(self, patience=7, min_delta=0.0, path='checkpoints/best_model_earlystop.pth', verbose=True):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.path = path
+        self.verbose = verbose
+
+    def __call__(self, val_loss, model, epoch, optimizer):
+        if self.best_score is None:
+            self.best_score = val_loss
+            self.save_checkpoint(val_loss, model, epoch, optimizer)
+        elif val_loss < self.best_score - self.min_delta:
+            self.best_score = val_loss
+            self.counter = 0
+            self.save_checkpoint(val_loss, model, epoch, optimizer)
+        else:
+            self.counter += 1
+            if self.verbose:
+                print(f"⏳ EarlyStopping counter: {self.counter} / {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+
+    def save_checkpoint(self, val_loss, model, epoch, optimizer):
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'val_loss': val_loss
+        }, self.path)
+        if self.verbose:
+            print(f"📦 EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
+
+# ───────────────────────────────────────
+# 📌 Total Variation Loss
+# ───────────────────────────────────────
+def total_variation_loss(img):
+    tv_h = torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]))
+    tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
+    return tv_h + tv_w
 
 # ───────────────────────────────────────
 # ⚙️ Device Setup
@@ -35,11 +79,8 @@ val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=Tru
 # 🧠 Model, Loss, Optimizer
 # ───────────────────────────────────────
 model = RestormerCrowdFlow().to(device)
-criterion = nn.MSELoss()
-mae_fn = nn.L1Loss()
+l1_loss_fn = nn.L1Loss()
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
-
-# ✅ Learning rate scheduler
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
 
 # ───────────────────────────────────────
@@ -60,51 +101,44 @@ if os.path.exists(latest_path):
     print(f"✅ Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
 
 # ───────────────────────────────────────
-# 📂 Training Log Setup
+# ⏹️ Init EarlyStopping
 # ───────────────────────────────────────
-log_dir = 'logs'
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, 'training_log.csv')
-
-# Write header if log file doesn't exist
-if not os.path.exists(log_file) or start_epoch == 0:
-    with open(log_file, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Epoch', 'Train_MSE_Avg', 'Train_MSE_Min', 'Train_MSE_Max', 'Val_MSE', 'Val_MAE', 'Val_SSIM', 'LR'])
+early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
 
 # ───────────────────────────────────────
 # 🔁 Training Loop
 # ───────────────────────────────────────
 epochs = 50
-
 for epoch in range(start_epoch, epochs):
     print(f"\n🔁 Epoch [{epoch + 1}/{epochs}]")
     model.train()
     train_losses = []
 
     for step, (inputs, targets) in enumerate(train_loader):
-        inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
+        inputs, targets = inputs.to(device), targets.to(device)
 
         optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
-        loss = criterion(outputs, targets)
+
+        l1 = l1_loss_fn(outputs, targets)
+        ssim = pytorch_ssim.ssim(outputs, targets)
+        tv = total_variation_loss(outputs)
+
+        loss = l1 + (1 - ssim) + 0.001 * tv
         loss.backward()
         optimizer.step()
 
         train_losses.append(loss.item())
-        print(f"  [Train] Step {step+1}/{len(train_loader)} | MSE: {loss.item():.6f}")
+        print(f"  [Train] Step {step+1}/{len(train_loader)} | Loss: {loss.item():.6f}")
 
     avg_train_loss = np.mean(train_losses)
-    min_train_loss = np.min(train_losses)
-    max_train_loss = np.max(train_losses)
-    print(f"📉 Train Loss — Avg: {avg_train_loss:.6f} | Min: {min_train_loss:.6f} | Max: {max_train_loss:.6f}")
+    print(f"📉 Train Loss — Avg: {avg_train_loss:.6f}")
 
     # ────────────────────────────────
     # ✅ Validation
     # ────────────────────────────────
     model.eval()
-    val_losses = []
-    val_mae = []
+    val_l1 = []
     val_ssim = []
 
     with torch.no_grad():
@@ -112,47 +146,33 @@ for epoch in range(start_epoch, epochs):
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
 
-            pred = outputs.squeeze().cpu().numpy()
-            gt = targets.squeeze().cpu().numpy()
+            l1 = l1_loss_fn(outputs, targets)
+            ssim_score = pytorch_ssim.ssim(outputs, targets)
 
-            loss = criterion(outputs, targets)
-            val_losses.append(loss.item())
-            val_mae.append(mae_fn(outputs, targets).item())
-            try:
-                val_ssim.append(ssim(pred, gt, data_range=1.0))
-            except:
-                val_ssim.append(0.0)
+            val_l1.append(l1.item())
+            val_ssim.append(ssim_score.item())
 
-    avg_val_loss = np.mean(val_losses)
-    avg_val_mae = np.mean(val_mae)
+    avg_val_l1 = np.mean(val_l1)
     avg_val_ssim = np.mean(val_ssim)
 
-    print(f"✅ Val MSE: {avg_val_loss:.6f} | MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f}")
+    print(f"✅ Val L1: {avg_val_l1:.6f} | SSIM: {avg_val_ssim:.4f}")
 
     # ────────────────────────────────
-    # 💾 Save Checkpoints
+    # 💾 Save latest and best checkpoints
     # ────────────────────────────────
-    ckpt_name = f"epoch_{epoch+1:02d}_val_{avg_val_loss:.4f}.pth"
-    ckpt_path = os.path.join(checkpoint_dir, ckpt_name)
-
     torch.save({
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'val_loss': avg_val_loss
-    }, ckpt_path)
-    print(f"💾 Checkpoint saved: {ckpt_name}")
-
-    torch.save({
-        'epoch': epoch + 1,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'val_loss': avg_val_loss
+        'val_loss': avg_val_l1
     }, latest_path)
 
-    if avg_val_loss < best_val_loss:
-        best_val_loss = avg_val_loss
-        best_model_path = os.path.join(checkpoint_dir, f"best_model_epoch_{epoch+1}.pth")
+    if avg_val_l1 < best_val_loss:
+        best_val_loss = avg_val_l1
+        best_model_path = os.path.join(
+            checkpoint_dir,
+            f"best_model_epoch_{epoch+1:02d}_val_{avg_val_l1:.4f}.pth"
+        )
         torch.save({
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
@@ -161,25 +181,15 @@ for epoch in range(start_epoch, epochs):
         }, best_model_path)
         print(f"🏆 New best model saved: {best_model_path}")
 
-    # ────────────────────────────────
-    # 📝 Append to Log
-    # ────────────────────────────────
-    current_lr = scheduler.get_last_lr()[0]
-    with open(log_file, 'a', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            epoch + 1,
-            f"{avg_train_loss:.6f}",
-            f"{min_train_loss:.6f}",
-            f"{max_train_loss:.6f}",
-            f"{avg_val_loss:.6f}",
-            f"{avg_val_mae:.6f}",
-            f"{avg_val_ssim:.4f}",
-            f"{current_lr:.6f}"
-        ])
+    # ⏹️ EarlyStopping check
+    early_stopper(avg_val_l1, model, epoch + 1, optimizer)
+    if early_stopper.early_stop:
+        print("🛑 Early stopping triggered. Training halted.")
+        break
 
-    # 🔄 Step the scheduler
+    # 🔧 Step the scheduler
     scheduler.step()
+    current_lr = scheduler.get_last_lr()[0]
     print(f"🔧 Learning Rate: {current_lr:.6f}")
 
 print("\n🎉 Training complete!")
