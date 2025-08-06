@@ -108,7 +108,7 @@ early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
 # ───────────────────────────────────────
 # Training Loop
 # ───────────────────────────────────────
-epochs = 100
+epochs = 200
 for epoch in range(start_epoch, epochs):
     print(f"\n Epoch [{epoch + 1}/{epochs}]")
     model.train()
