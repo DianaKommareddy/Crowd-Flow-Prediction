@@ -11,3 +11,4 @@ opencv-python
 matplotlib
 Pillow
 tqdm
+pytorch-ssim
