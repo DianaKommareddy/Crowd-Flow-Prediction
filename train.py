@@ -7,10 +7,10 @@ from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
 import os
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
-import pytorch_ssim  # ✅ SSIM Loss
+import pytorch_ssim  # SSIM Loss
 
 # ───────────────────────────────────────
-# ⏹️ EarlyStopping Utility
+# EarlyStopping Utility
 # ───────────────────────────────────────
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0.0, path='checkpoints/best_model_earlystop.pth', verbose=True):
@@ -45,10 +45,10 @@ class EarlyStopping:
             'val_loss': val_loss
         }, self.path)
         if self.verbose:
-            print(f"📦 EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
+            print(f"EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
 
 # ───────────────────────────────────────
-# 📌 Total Variation Loss
+# Total Variation Loss
 # ───────────────────────────────────────
 def total_variation_loss(img):
     tv_h = torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]))
@@ -56,13 +56,13 @@ def total_variation_loss(img):
     return tv_h + tv_w
 
 # ───────────────────────────────────────
-# ⚙️ Device Setup
+#  Device Setup
 # ───────────────────────────────────────
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 # ───────────────────────────────────────
-# 📦 Load Dataset
+# Load Dataset
 # ───────────────────────────────────────
 dataset = CrowdFlowDataset(root_dir='dataset')
 
@@ -76,7 +76,7 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pi
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
 # ───────────────────────────────────────
-# 🧠 Model, Loss, Optimizer
+# Model, Loss, Optimizer
 # ───────────────────────────────────────
 model = RestormerCrowdFlow().to(device)
 l1_loss_fn = nn.L1Loss()
@@ -84,7 +84,7 @@ optimizer = optim.Adam(model.parameters(), lr=1e-4)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
 
 # ───────────────────────────────────────
-# 💾 Checkpoint Setup
+# Checkpoint Setup
 # ───────────────────────────────────────
 checkpoint_dir = 'checkpoints'
 os.makedirs(checkpoint_dir, exist_ok=True)
@@ -98,19 +98,19 @@ if os.path.exists(latest_path):
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint['epoch']
     best_val_loss = checkpoint['val_loss']
-    print(f"✅ Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
+    print(f"Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
 
 # ───────────────────────────────────────
-# ⏹️ Init EarlyStopping
+# Init EarlyStopping
 # ───────────────────────────────────────
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
 
 # ───────────────────────────────────────
-# 🔁 Training Loop
+# Training Loop
 # ───────────────────────────────────────
 epochs = 100
 for epoch in range(start_epoch, epochs):
-    print(f"\n🔁 Epoch [{epoch + 1}/{epochs}]")
+    print(f"\n Epoch [{epoch + 1}/{epochs}]")
     model.train()
     train_losses = []
 
@@ -135,7 +135,7 @@ for epoch in range(start_epoch, epochs):
     print(f"📉 Train Loss — Avg: {avg_train_loss:.6f}")
 
     # ────────────────────────────────
-    # ✅ Validation
+    # Validation
     # ────────────────────────────────
     model.eval()
     val_l1 = []
@@ -155,10 +155,10 @@ for epoch in range(start_epoch, epochs):
     avg_val_l1 = np.mean(val_l1)
     avg_val_ssim = np.mean(val_ssim)
 
-    print(f"✅ Val L1: {avg_val_l1:.6f} | SSIM: {avg_val_ssim:.4f}")
+    print(f"Val L1: {avg_val_l1:.6f} | SSIM: {avg_val_ssim:.4f}")
 
     # ────────────────────────────────
-    # 💾 Save latest and best checkpoints
+    # Save latest and best checkpoints
     # ────────────────────────────────
     torch.save({
         'epoch': epoch + 1,
@@ -179,17 +179,17 @@ for epoch in range(start_epoch, epochs):
             'optimizer_state_dict': optimizer.state_dict(),
             'val_loss': best_val_loss
         }, best_model_path)
-        print(f"🏆 New best model saved: {best_model_path}")
+        print(f"New best model saved: {best_model_path}")
 
-    # ⏹️ EarlyStopping check
+    # EarlyStopping check
     early_stopper(avg_val_l1, model, epoch + 1, optimizer)
     if early_stopper.early_stop:
-        print("🛑 Early stopping triggered. Training halted.")
+        print("Early stopping triggered. Training halted.")
         break
 
-    # 🔧 Step the scheduler
+    # Step the scheduler
     scheduler.step()
     current_lr = scheduler.get_last_lr()[0]
-    print(f"🔧 Learning Rate: {current_lr:.6f}")
+    print(f" Learning Rate: {current_lr:.6f}")
 
-print("\n🎉 Training complete!")
+print("\n Training complete!")
