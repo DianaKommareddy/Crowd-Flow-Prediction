@@ -78,7 +78,7 @@ with torch.no_grad():
         pred = outputs.squeeze().cpu().numpy()
         gt = targets.squeeze().cpu().numpy()
 
-        # 🔧 Ensure valid range and float32 dtype
+        # Ensure valid range and float32 dtype
         pred = np.clip(pred.astype(np.float32), 0, 1)
         gt = np.clip(gt.astype(np.float32), 0, 1)
 
