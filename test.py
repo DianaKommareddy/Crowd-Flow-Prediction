@@ -23,7 +23,7 @@ test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 # Load Model and Checkpoint
 # ───────────────────────────────────────
 model = RestormerCrowdFlow().to(device)
-checkpoint = torch.load('checkpoints/restormer_best.pth', map_location=device)
+checkpoint = torch.load('checkpoints/restormer_best.pth', map_location=device, weights_only=False)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 
