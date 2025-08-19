@@ -16,7 +16,7 @@ print(f"Using device: {device}")
 # ───────────────────────────────────────
 # Load Test Dataset
 # ───────────────────────────────────────
-test_dataset = CrowdFlowDataset(root_dir='Test Dataset')
+test_dataset = CrowdFlowDataset(root_dir='data')
 test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # ───────────────────────────────────────
