@@ -3,12 +3,14 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
-from dataset import CrowdFlowDataset
+import torchvision.transforms.functional as TF
+from dataset import CrowdFlowDataset  # your existing dataset class
 from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
 import os
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
 import pytorch_ssim  # SSIM Loss
+import random
 
 # EarlyStopping Utility
 class EarlyStopping:
@@ -52,37 +54,58 @@ def total_variation_loss(img):
     tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
     return tv_h + tv_w
 
-# Data Augmentation 
-train_transforms = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomVerticalFlip(),
-])
+# Joint Transform for A, E, G, Y together
+class JointTransform:
+    def __init__(self, horizontal_flip=True, vertical_flip=True):
+        self.hflip = horizontal_flip
+        self.vflip = vertical_flip
 
-val_transforms = transforms.Compose([
-    transforms.ToTensor(),
-])
+    def __call__(self, A, E, G, Y):
+        if self.hflip and random.random() > 0.5:
+            A = TF.hflip(A)
+            E = TF.hflip(E)
+            G = TF.hflip(G)
+            Y = TF.hflip(Y)
+        if self.vflip and random.random() > 0.5:
+            A = TF.vflip(A)
+            E = TF.vflip(E)
+            G = TF.vflip(G)
+            Y = TF.vflip(Y)
+        return A, E, G, Y
+
+# Per image transforms (e.g. ToTensor)
+train_per_image_transform = transforms.ToTensor()
+val_per_image_transform = transforms.ToTensor()
 
 # Device Setup
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# Load Dataset with Transform
-dataset = CrowdFlowDataset(root_dir='dataset', transform=train_transforms)
+# Instantiate joint transform for training
+joint_transform = JointTransform(horizontal_flip=True, vertical_flip=True)
+
+# Modified Dataset class usage: pass joint_transform and per-image transform
+# Your CrowdFlowDataset class must support joint_transform and per-image transform calls
+dataset = CrowdFlowDataset(
+    root_dir='dataset',
+    joint_transform=joint_transform,
+    transform=train_per_image_transform
+)
 
 val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-# Override val_dataset transforms for validation
-val_dataset.dataset.transform = val_transforms
+# Disable augmentation for validation
+val_dataset.dataset.joint_transform = None  
+val_dataset.dataset.transform = val_per_image_transform
 
 batch_size = 4
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
-# Model, Load Pretrained Weights, Freeze Some Layers
+# Model, Load Pretrained Weights, Freeze Layers
 model = RestormerCrowdFlow().to(device)
 
 pretrain_path = 'checkpoints/restormer_best.pth'
@@ -93,20 +116,19 @@ if os.path.exists(pretrain_path):
 else:
     print("No pre-trained checkpoint provided, training from scratch.")
 
-# Freeze embedding and first encoder layers to prevent overfitting on small dataset
+# Freeze embedding and first encoder layers
 for param in model.embedding.parameters():
     param.requires_grad = False
 for param in model.encoder1.parameters():
     param.requires_grad = False
 
-# Only parameters with requires_grad=True will be optimized
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
 
 mae_loss_fn = nn.L1Loss()
 mse_loss_fn = nn.MSELoss()
 
-# Checkpoint Setup
+# Checkpoint setup
 checkpoint_dir = 'checkpoints'
 os.makedirs(checkpoint_dir, exist_ok=True)
 start_epoch = 0
@@ -121,7 +143,6 @@ if os.path.exists(latest_path):
     best_val_loss = checkpoint['val_loss']
     print(f"Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
 
-# Init EarlyStopping
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
 
 # Training Loop
@@ -152,7 +173,6 @@ for epoch in range(start_epoch, epochs):
     avg_train_loss = np.mean(train_losses)
     print(f"Train Loss — Avg: {avg_train_loss:.6f}")
 
-    # Validation
     model.eval()
     val_mae = []
     val_ssim = []
@@ -171,7 +191,6 @@ for epoch in range(start_epoch, epochs):
 
     print(f"Val MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f}")
 
-    # Save latest and best checkpoints
     torch.save({
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
@@ -193,13 +212,11 @@ for epoch in range(start_epoch, epochs):
         }, best_model_path)
         print(f"New best model saved: {best_model_path}")
 
-    # EarlyStopping check
     early_stopper(avg_val_mae, model, epoch + 1, optimizer)
     if early_stopper.early_stop:
         print("Early stopping triggered. Training halted.")
         break
 
-    # Step the scheduler
     scheduler.step()
     current_lr = scheduler.get_last_lr()[0]
     print(f"Learning Rate: {current_lr:.6f}")
