@@ -2,12 +2,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
+from torchvision import transforms
 from dataset import CrowdFlowDataset
 from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
 import os
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
 import pytorch_ssim  # SSIM Loss
+
 
 # ───────────────────────────────────────
 # EarlyStopping Utility
@@ -47,6 +49,7 @@ class EarlyStopping:
         if self.verbose:
             print(f"EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
 
+
 # ───────────────────────────────────────
 # Total Variation Loss
 # ───────────────────────────────────────
@@ -55,33 +58,73 @@ def total_variation_loss(img):
     tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
     return tv_h + tv_w
 
+
 # ───────────────────────────────────────
-#  Device Setup
+# Data Augmentation (Optional but recommended)
+# ───────────────────────────────────────
+train_transforms = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomVerticalFlip(),
+    # You can add more augmentations here if suitable for your data
+])
+
+val_transforms = transforms.Compose([
+    transforms.ToTensor(),
+])
+
+
+# ───────────────────────────────────────
+# Device Setup
 # ───────────────────────────────────────
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
+
 # ───────────────────────────────────────
-# Load Dataset
+# Load Dataset with Transform
 # ───────────────────────────────────────
-dataset = CrowdFlowDataset(root_dir='dataset')
+dataset = CrowdFlowDataset(root_dir='Train_Dataset', transform=train_transforms)
 
 val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
+# Override val_dataset transforms for validation
+val_dataset.dataset.transform = val_transforms
+
 batch_size = 4
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
+
 # ───────────────────────────────────────
-# Model, Loss, Optimizer
+# Model, Load Pretrained Weights, Freeze Some Layers
 # ───────────────────────────────────────
 model = RestormerCrowdFlow().to(device)
-l1_loss_fn = nn.L1Loss()
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
+
+pretrain_path = 'checkpoints/restormer_best.pth'
+if os.path.exists(pretrain_path):
+    print(f"Loading pre-trained weights for fine-tuning from {pretrain_path}")
+    checkpoint = torch.load(pretrain_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+else:
+    print("No pre-trained checkpoint provided, training from scratch.")
+
+# Freeze embedding and first encoder layers to prevent overfitting on small dataset
+for param in model.embedding.parameters():
+    param.requires_grad = False
+for param in model.encoder1.parameters():
+    param.requires_grad = False
+
+# Only parameters with requires_grad=True will be optimized
+optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
+
+l1_loss_fn = nn.L1Loss()
+mse_loss_fn = nn.MSELoss()
+
 
 # ───────────────────────────────────────
 # Checkpoint Setup
@@ -100,10 +143,12 @@ if os.path.exists(latest_path):
     best_val_loss = checkpoint['val_loss']
     print(f"Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
 
+
 # ───────────────────────────────────────
 # Init EarlyStopping
 # ───────────────────────────────────────
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
+
 
 # ───────────────────────────────────────
 # Training Loop
@@ -121,13 +166,14 @@ for epoch in range(start_epoch, epochs):
         outputs = model(inputs)
 
         l1 = l1_loss_fn(outputs, targets)
-        ssim = pytorch_ssim.ssim(outputs, targets)
+        mse = mse_loss_fn(outputs, targets)
+        ssim_val = pytorch_ssim.ssim(outputs, targets)
         tv = total_variation_loss(outputs)
 
-        loss = l1 + (1 - ssim) + 0.001 * tv
+        loss = l1 + mse + (1 - ssim_val) + 0.001 * tv
+
         loss.backward()
         optimizer.step()
-
         train_losses.append(loss.item())
         print(f"  [Train] Step {step+1}/{len(train_loader)} | Loss: {loss.item():.6f}")
 
@@ -145,10 +191,8 @@ for epoch in range(start_epoch, epochs):
         for inputs, targets in val_loader:
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
-
             l1 = l1_loss_fn(outputs, targets)
             ssim_score = pytorch_ssim.ssim(outputs, targets)
-
             val_l1.append(l1.item())
             val_ssim.append(ssim_score.item())
 
