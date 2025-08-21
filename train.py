@@ -10,10 +10,7 @@ import numpy as np
 from torch.optim.lr_scheduler import StepLR
 import pytorch_ssim  # SSIM Loss
 
-
-# ───────────────────────────────────────
 # EarlyStopping Utility
-# ───────────────────────────────────────
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0.0, path='checkpoints/best_model_earlystop.pth', verbose=True):
         self.patience = patience
@@ -35,7 +32,7 @@ class EarlyStopping:
         else:
             self.counter += 1
             if self.verbose:
-                print(f"⏳ EarlyStopping counter: {self.counter} / {self.patience}")
+                print(f"EarlyStopping counter: {self.counter} / {self.patience}")
             if self.counter >= self.patience:
                 self.early_stop = True
 
@@ -49,42 +46,29 @@ class EarlyStopping:
         if self.verbose:
             print(f"EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
 
-
-# ───────────────────────────────────────
 # Total Variation Loss
-# ───────────────────────────────────────
 def total_variation_loss(img):
     tv_h = torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]))
     tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
     return tv_h + tv_w
 
-
-# ───────────────────────────────────────
-# Data Augmentation (Optional but recommended)
-# ───────────────────────────────────────
+# Data Augmentation 
 train_transforms = transforms.Compose([
     transforms.ToTensor(),
     transforms.RandomHorizontalFlip(),
     transforms.RandomVerticalFlip(),
-    # You can add more augmentations here if suitable for your data
 ])
 
 val_transforms = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-
-# ───────────────────────────────────────
 # Device Setup
-# ───────────────────────────────────────
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-
-# ───────────────────────────────────────
 # Load Dataset with Transform
-# ───────────────────────────────────────
-dataset = CrowdFlowDataset(root_dir='Train_Dataset', transform=train_transforms)
+dataset = CrowdFlowDataset(root_dir='dataset', transform=train_transforms)
 
 val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
@@ -98,10 +82,7 @@ batch_size = 4
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
-
-# ───────────────────────────────────────
 # Model, Load Pretrained Weights, Freeze Some Layers
-# ───────────────────────────────────────
 model = RestormerCrowdFlow().to(device)
 
 pretrain_path = 'checkpoints/restormer_best.pth'
@@ -122,13 +103,10 @@ for param in model.encoder1.parameters():
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
 
-l1_loss_fn = nn.L1Loss()
+mae_loss_fn = nn.L1Loss()
 mse_loss_fn = nn.MSELoss()
 
-
-# ───────────────────────────────────────
 # Checkpoint Setup
-# ───────────────────────────────────────
 checkpoint_dir = 'checkpoints'
 os.makedirs(checkpoint_dir, exist_ok=True)
 start_epoch = 0
@@ -143,19 +121,13 @@ if os.path.exists(latest_path):
     best_val_loss = checkpoint['val_loss']
     print(f"Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
 
-
-# ───────────────────────────────────────
 # Init EarlyStopping
-# ───────────────────────────────────────
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
 
-
-# ───────────────────────────────────────
 # Training Loop
-# ───────────────────────────────────────
 epochs = 200
 for epoch in range(start_epoch, epochs):
-    print(f"\n Epoch [{epoch + 1}/{epochs}]")
+    print(f"\nEpoch [{epoch + 1}/{epochs}]")
     model.train()
     train_losses = []
 
@@ -165,57 +137,53 @@ for epoch in range(start_epoch, epochs):
         optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
 
-        l1 = l1_loss_fn(outputs, targets)
+        mae = mae_loss_fn(outputs, targets)
         mse = mse_loss_fn(outputs, targets)
         ssim_val = pytorch_ssim.ssim(outputs, targets)
         tv = total_variation_loss(outputs)
 
-        loss = l1 + mse + (1 - ssim_val) + 0.001 * tv
+        loss = mae + mse + (1 - ssim_val) + 0.001 * tv
 
         loss.backward()
         optimizer.step()
         train_losses.append(loss.item())
-        print(f"  [Train] Step {step+1}/{len(train_loader)} | Loss: {loss.item():.6f}")
+        print(f"  [Train] Step {step + 1}/{len(train_loader)} | Loss: {loss.item():.6f}")
 
     avg_train_loss = np.mean(train_losses)
-    print(f"📉 Train Loss — Avg: {avg_train_loss:.6f}")
+    print(f"Train Loss — Avg: {avg_train_loss:.6f}")
 
-    # ────────────────────────────────
     # Validation
-    # ────────────────────────────────
     model.eval()
-    val_l1 = []
+    val_mae = []
     val_ssim = []
 
     with torch.no_grad():
         for inputs, targets in val_loader:
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
-            l1 = l1_loss_fn(outputs, targets)
+            mae_val = mae_loss_fn(outputs, targets)
             ssim_score = pytorch_ssim.ssim(outputs, targets)
-            val_l1.append(l1.item())
+            val_mae.append(mae_val.item())
             val_ssim.append(ssim_score.item())
 
-    avg_val_l1 = np.mean(val_l1)
+    avg_val_mae = np.mean(val_mae)
     avg_val_ssim = np.mean(val_ssim)
 
-    print(f"Val L1: {avg_val_l1:.6f} | SSIM: {avg_val_ssim:.4f}")
+    print(f"Val MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f}")
 
-    # ────────────────────────────────
     # Save latest and best checkpoints
-    # ────────────────────────────────
     torch.save({
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'val_loss': avg_val_l1
+        'val_loss': avg_val_mae
     }, latest_path)
 
-    if avg_val_l1 < best_val_loss:
-        best_val_loss = avg_val_l1
+    if avg_val_mae < best_val_loss:
+        best_val_loss = avg_val_mae
         best_model_path = os.path.join(
             checkpoint_dir,
-            f"best_model_epoch_{epoch+1:02d}_val_{avg_val_l1:.4f}.pth"
+            f"best_model_epoch_{epoch + 1:02d}_val_{avg_val_mae:.4f}.pth"
         )
         torch.save({
             'epoch': epoch + 1,
@@ -226,7 +194,7 @@ for epoch in range(start_epoch, epochs):
         print(f"New best model saved: {best_model_path}")
 
     # EarlyStopping check
-    early_stopper(avg_val_l1, model, epoch + 1, optimizer)
+    early_stopper(avg_val_mae, model, epoch + 1, optimizer)
     if early_stopper.early_stop:
         print("Early stopping triggered. Training halted.")
         break
@@ -234,6 +202,6 @@ for epoch in range(start_epoch, epochs):
     # Step the scheduler
     scheduler.step()
     current_lr = scheduler.get_last_lr()[0]
-    print(f" Learning Rate: {current_lr:.6f}")
+    print(f"Learning Rate: {current_lr:.6f}")
 
-print("\n Training complete!")
+print("\nTraining complete!")
