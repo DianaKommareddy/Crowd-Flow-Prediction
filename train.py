@@ -111,7 +111,7 @@ model = RestormerCrowdFlow().to(device)
 pretrain_path = 'checkpoints/restormer_best.pth'
 if os.path.exists(pretrain_path):
     print(f"Loading pre-trained weights for fine-tuning from {pretrain_path}")
-    checkpoint = torch.load(pretrain_path, map_location=device)
+    checkpoint = torch.load(pretrain_path, map_location=device,weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 else:
     print("No pre-trained checkpoint provided, training from scratch.")
@@ -134,7 +134,7 @@ best_val_loss = float('inf')
 
 latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
 if os.path.exists(latest_path):
-    checkpoint = torch.load(latest_path, map_location=device)
+    checkpoint = torch.load(latest_path, map_location=device,weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint['epoch']
@@ -208,6 +208,13 @@ for epoch in range(start_epoch, epochs):
         }, best_model_path)
         print(f"New best model saved: {best_model_path}")
 
-    early_stopper(avg_val_mae, model, epoch + 1, optimizer)
+   early_stopper(avg_val_mae, model, epoch + 1, optimizer)
     if early_stopper.early_stop:
-        print("Early stopping triggered. Training
+        print("Early stopping triggered. Training halted.")
+        break
+
+    scheduler.step()
+    current_lr = scheduler.get_last_lr()[0]
+    print(f"Learning Rate: {current_lr:.6f}")
+
+print("\nTraining complete!")
