@@ -4,12 +4,12 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 import torchvision.transforms.functional as TF
-from dataset import CrowdFlowDataset  # your existing dataset class
+from dataset import CrowdFlowDataset
 from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
 import os
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
-import pytorch_ssim  # SSIM Loss
+import pytorch_ssim  # pip install pytorch-ssim if missing
 import random
 
 # EarlyStopping Utility
@@ -61,6 +61,7 @@ class JointTransform:
         self.vflip = vertical_flip
 
     def __call__(self, A, E, G, Y):
+        # Simple augmentation; easy to switch off by passing False
         if self.hflip and random.random() > 0.5:
             A = TF.hflip(A)
             E = TF.hflip(E)
@@ -81,11 +82,10 @@ val_per_image_transform = transforms.ToTensor()
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# Instantiate joint transform for training
-joint_transform = JointTransform(horizontal_flip=True, vertical_flip=True)
+# Data preparation
+# Data augmentation ON for train, OFF for val/test
+joint_transform = JointTransform(horizontal_flip=True, vertical_flip=True)  # set to False/False to disable
 
-# Modified Dataset class usage: pass joint_transform and per-image transform
-# Your CrowdFlowDataset class must support joint_transform and per-image transform calls
 dataset = CrowdFlowDataset(
     root_dir='dataset',
     joint_transform=joint_transform,
@@ -105,7 +105,7 @@ batch_size = 4
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
-# Model, Load Pretrained Weights, Freeze Layers
+# Model
 model = RestormerCrowdFlow().to(device)
 
 pretrain_path = 'checkpoints/restormer_best.pth'
@@ -116,11 +116,9 @@ if os.path.exists(pretrain_path):
 else:
     print("No pre-trained checkpoint provided, training from scratch.")
 
-# Freeze embedding and first encoder layers
-for param in model.embedding.parameters():
-    param.requires_grad = False
-for param in model.encoder1.parameters():
-    param.requires_grad = False
+# UNFREEZE ALL LAYERS (do not freeze embedding/encoder1)
+for param in model.parameters():
+    param.requires_grad = True
 
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
@@ -154,7 +152,6 @@ for epoch in range(start_epoch, epochs):
 
     for step, (inputs, targets) in enumerate(train_loader):
         inputs, targets = inputs.to(device), targets.to(device)
-
         optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
 
@@ -164,7 +161,6 @@ for epoch in range(start_epoch, epochs):
         tv = total_variation_loss(outputs)
 
         loss = mae + mse + (1 - ssim_val) + 0.001 * tv
-
         loss.backward()
         optimizer.step()
         train_losses.append(loss.item())
@@ -214,11 +210,4 @@ for epoch in range(start_epoch, epochs):
 
     early_stopper(avg_val_mae, model, epoch + 1, optimizer)
     if early_stopper.early_stop:
-        print("Early stopping triggered. Training halted.")
-        break
-
-    scheduler.step()
-    current_lr = scheduler.get_last_lr()[0]
-    print(f"Learning Rate: {current_lr:.6f}")
-
-print("\nTraining complete!")
+        print("Early stopping triggered. Training
