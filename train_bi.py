@@ -1,17 +1,33 @@
 # train_bi.py
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
 from dataset import CrowdFlowDataset
 from models import BioCrowdFlowModel
-import os
 import numpy as np
 import pytorch_ssim  # SSIM Loss
 
+# ───────────────────────────────────────
+# Config
+# ───────────────────────────────────────
+IMG_SIZE = 32
+BATCH_SIZE = 4
+LR = 2e-4
+EPOCHS = 200
+HEADS = 4
+GROUPS = 2
+USE_AMP = True
+PIN_MEMORY = True
+PRINT_BATCH_DEBUG_ONCE = True  # prints shapes of the first parsed batch
+
+# Optional: reduce CUDA fragmentation
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:128")
 
 # ───────────────────────────────────────
-# EarlyStopping Utility
+# EarlyStopping
 # ───────────────────────────────────────
 class EarlyStopping:
     def __init__(self, patience=10, min_delta=1e-4, path='checkpoints/best_model.pth', verbose=True):
@@ -46,7 +62,7 @@ class EarlyStopping:
             'val_loss': val_loss
         }, self.path)
         if self.verbose:
-            print(f"✔️ EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
+            print(f"✔️ Saved best model (val_loss={val_loss:.6f}) → {self.path}")
 
 
 # ───────────────────────────────────────
@@ -59,205 +75,304 @@ def total_variation_loss(img):
 
 
 # ───────────────────────────────────────
-# Helper: unpack batch into A, E, G, target
+# Helper utils
 # ───────────────────────────────────────
+def _to_device(x, device):
+    if isinstance(x, torch.Tensor):
+        return x.to(device)
+    if isinstance(x, (list, tuple)) and len(x) > 0 and all(isinstance(t, torch.Tensor) for t in x):
+        # try stack per-sample list into (B, ...)
+        try:
+            return torch.stack(x, dim=0).to(device)
+        except Exception:
+            # fall back: return first item moved (better than crashing)
+            return x[0].to(device)
+    return x  # non-tensor; let caller handle
+
+def _ensure_nchw(x):
+    """Make sure tensor is (B, C, H, W). Adds channel dim if needed."""
+    if not isinstance(x, torch.Tensor):
+        return x
+    if x.dim() == 2:
+        # (H, W) -> (1, 1, H, W)
+        x = x.unsqueeze(0).unsqueeze(0)
+    elif x.dim() == 3:
+        # could be (C,H,W) or (B,H,W). Heuristic: if first dim is small, treat as C
+        if x.shape[0] in (1, 3):  # (C,H,W)
+            x = x.unsqueeze(0)
+        else:  # (B,H,W)
+            x = x.unsqueeze(1)
+    elif x.dim() == 4:
+        pass
+    else:
+        raise ValueError(f"Unsupported tensor shape {tuple(x.shape)}; expected 2-4 dims")
+    return x
+
+def _split_inputs_tensor(inputs):
+    """
+    Split a (B,C,H,W) inputs into (A,E,G) single-channel tensors.
+    If C==3 -> channels 0,1,2.
+    If C==1 -> E,G are zeros.
+    If C>3 and divisible by 3 -> average each third to 1 channel.
+    Otherwise -> treat whole as A and zeros for E,G.
+    """
+    B, C, H, W = inputs.shape
+    if C == 3:
+        A = inputs[:, 0:1]
+        E = inputs[:, 1:2]
+        G = inputs[:, 2:3]
+    elif C == 1:
+        A = inputs
+        Z = torch.zeros_like(A)
+        E, G = Z, Z
+    elif C % 3 == 0:
+        ch = C // 3
+        A = inputs[:, 0:ch].mean(dim=1, keepdim=True)
+        E = inputs[:, ch:2*ch].mean(dim=1, keepdim=True)
+        G = inputs[:, 2*ch:3*ch].mean(dim=1, keepdim=True)
+    else:
+        A = inputs.mean(dim=1, keepdim=True)
+        Z = torch.zeros_like(A)
+        E, G = Z, Z
+    return A, E, G
+
+
+# ───────────────────────────────────────
+# Helper: unpack batch (robust)
+# ───────────────────────────────────────
+_first_debug_print_done = False
 def unpack_batch(batch, device):
-    """
-    Accepts whatever a dataset returns and converts it into A, E, G, target (all tensors on device).
-    Supported formats:
-      - (A, E, G, target)
-      - (inputs, target) where inputs can be:
-          * shape (B, 3, H, W) -> channels correspond to A,E,G (split into single-channel tensors)
-          * shape (B, 1, H, W) -> assumed A only; E and G returned as zeros
-      - dict with keys 'A','E','G','target' or similar (best-effort)
-    """
-    # case: dict-like
+    global _first_debug_print_done
+
+    # Case 1: dict with keys
     if isinstance(batch, dict):
-        # try common keys
         A = batch.get('A') or batch.get('agent') or batch.get('a')
         E = batch.get('E') or batch.get('env') or batch.get('e')
         G = batch.get('G') or batch.get('goal') or batch.get('g')
         T = batch.get('target') or batch.get('y') or batch.get('label') or batch.get('gt')
         if A is None:
-            raise ValueError("Dataset dict must contain keys like 'A','E','G','target' or similar.")
-        A, E, G, T = A.to(device), (E.to(device) if E is not None else None), (G.to(device) if G is not None else None), T.to(device)
-        if E is None:
-            E = torch.zeros_like(A)
-        if G is None:
-            G = torch.zeros_like(A)
-        return A, E, G, T
+            raise ValueError("Dataset dict must contain keys like 'A','E','G','target'")
+        A, E, G, T = _to_device(A, device), _to_device(E, device), _to_device(G, device), _to_device(T, device)
+        A, E, G = _ensure_nchw(A), _ensure_nchw(E), _ensure_nchw(G)
+        T = _ensure_nchw(T)
+        if E is None: E = torch.zeros_like(A)
+        if G is None: G = torch.zeros_like(A)
 
-    # case: tuple/list
-    if isinstance(batch, (tuple, list)):
+    # Case 2: tuple/list
+    elif isinstance(batch, (tuple, list)):
         if len(batch) == 4:
             A, E, G, T = batch
-            return A.to(device), E.to(device), G.to(device), T.to(device)
+            A, E, G, T = _to_device(A, device), _to_device(E, device), _to_device(G, device), _to_device(T, device)
+            A, E, G, T = _ensure_nchw(A), _ensure_nchw(E), _ensure_nchw(G), _ensure_nchw(T)
+
         elif len(batch) == 2:
             inputs, T = batch
-            inputs = inputs.to(device)
-            T = T.to(device)
-            # inputs could be (B,3,H,W) or (B,1,H,W)
-            if inputs.dim() == 4 and inputs.shape[1] == 3:
-                # split channels into single-channel tensors
-                A = inputs[:, 0:1, :, :]
-                E = inputs[:, 1:2, :, :]
-                G = inputs[:, 2:3, :, :]
-                return A, E, G, T
-            elif inputs.dim() == 4 and inputs.shape[1] == 1:
-                A = inputs
-                E = torch.zeros_like(A)
-                G = torch.zeros_like(A)
-                return A, E, G, T
+            # if inputs is a dict with A/E/G
+            if isinstance(inputs, dict):
+                A = inputs.get('A') or inputs.get('agent') or inputs.get('a')
+                E = inputs.get('E') or inputs.get('env') or inputs.get('e')
+                G = inputs.get('G') or inputs.get('goal') or inputs.get('g')
+                A, E, G = _to_device(A, device), _to_device(E, device), _to_device(G, device)
+                A, E, G = _ensure_nchw(A), _ensure_nchw(E), _ensure_nchw(G)
+                # fill missing E/G
+                if E is None: E = torch.zeros_like(A)
+                if G is None: G = torch.zeros_like(A)
             else:
-                # fallback: try to split along channel into three equal parts
-                c = inputs.shape[1]
-                if c % 3 == 0:
-                    ch = c // 3
-                    A = inputs[:, 0:ch, :, :]
-                    E = inputs[:, ch:2*ch, :, :]
-                    G = inputs[:, 2*ch:3*ch, :, :]
-                    # if channels >1, project to single-channel by taking mean across channel dim
-                    if A.shape[1] != 1:
-                        A = A.mean(dim=1, keepdim=True)
-                        E = E.mean(dim=1, keepdim=True)
-                        G = G.mean(dim=1, keepdim=True)
-                    return A, E, G, T
+                # inputs could be tensor OR list/tuple of tensors
+                inputs = _to_device(inputs, device)
+                if isinstance(inputs, (list, tuple)):
+                    # per-sample structures: try to collate to tensor
+                    if len(inputs) > 0 and isinstance(inputs[0], dict):
+                        # list of dicts (unlikely because DataLoader usually collates),
+                        # but handle gracefully: stack A/E/G from each item
+                        A_list, E_list, G_list = [], [], []
+                        for d in inputs:
+                            A_list.append(_ensure_nchw(_to_device(d.get('A') or d.get('agent') or d.get('a'), device)))
+                            e = d.get('E') or d.get('env') or d.get('e')
+                            g = d.get('G') or d.get('goal') or d.get('g')
+                            E_list.append(_ensure_nchw(_to_device(e, device)) if e is not None else None)
+                            G_list.append(_ensure_nchw(_to_device(g, device)) if g is not None else None)
+                        A = torch.cat(A_list, dim=0)
+                        if all(t is not None for t in E_list):
+                            E = torch.cat(E_list, dim=0)
+                        else:
+                            E = torch.zeros_like(A)
+                        if all(t is not None for t in G_list):
+                            G = torch.cat(G_list, dim=0)
+                        else:
+                            G = torch.zeros_like(A)
+                    else:
+                        # list/tuple of tensors -> stack
+                        inputs = _to_device(inputs, device)
+                        inputs = torch.stack(inputs, dim=0) if all(isinstance(t, torch.Tensor) for t in inputs) else inputs
+                        if not isinstance(inputs, torch.Tensor):
+                            raise ValueError("Could not collate inputs list/tuple into a tensor")
+                        inputs = _ensure_nchw(inputs)
+                        A, E, G = _split_inputs_tensor(inputs)
                 else:
-                    # last resort: treat inputs as A and create empty E,G
-                    A = inputs
-                    E = torch.zeros_like(A)
-                    G = torch.zeros_like(A)
-                    return A, E, G, T
+                    # inputs is a Tensor
+                    inputs = _ensure_nchw(inputs)
+                    A, E, G = _split_inputs_tensor(inputs)
 
-    raise ValueError("Unsupported batch format returned by dataset.")
+            # targets handling
+            T = _to_device(T, device)
+            if isinstance(T, (list, tuple)) and all(isinstance(t, torch.Tensor) for t in T):
+                try:
+                    T = torch.stack(T, dim=0)
+                except Exception:
+                    T = T[0]
+            T = _ensure_nchw(T)
+
+        else:
+            raise ValueError(f"Unsupported list/tuple length: {len(batch)}")
+
+    else:
+        raise ValueError(f"Unsupported batch type: {type(batch)}")
+
+    # One-time debug
+    if PRINT_BATCH_DEBUG_ONCE and not _first_debug_print_done:
+        _first_debug_print_done = True
+        def shape(t): return None if t is None else tuple(t.shape)
+        print(f"[Batch debug] A{shape(A)} E{shape(E)} G{shape(G)} T{shape(T)}")
+
+    return A, E, G, T
 
 
 # ───────────────────────────────────────
-# Device Setup
+# Device
 # ───────────────────────────────────────
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
-
+if device.type == 'cuda':
+    torch.cuda.empty_cache()
 
 # ───────────────────────────────────────
-# Load Dataset
+# Dataset & Loaders
 # ───────────────────────────────────────
 dataset = CrowdFlowDataset(root_dir='Train_Dataset')
-
-val_ratio = 0.1
-val_size = int(len(dataset) * val_ratio)
+val_size = int(len(dataset) * 0.1)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-batch_size = 4
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
-val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
-
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    pin_memory=(PIN_MEMORY and device.type=='cuda')
+)
+val_loader = DataLoader(
+    val_dataset,
+    batch_size=1,
+    shuffle=False,
+    pin_memory=(PIN_MEMORY and device.type=='cuda')
+)
 
 # ───────────────────────────────────────
-# Model, Optimizer, Losses
+# Model, Optimizer, Loss
 # ───────────────────────────────────────
-model = BioCrowdFlowModel().to(device)
-
-optimizer = optim.Adam(model.parameters(), lr=2e-4)
+model = BioCrowdFlowModel(dim=64, heads=HEADS, groups=GROUPS, num_latents=8, decoder_depth=4).to(device)
+optimizer = optim.Adam(model.parameters(), lr=LR)
 l1_loss_fn = nn.L1Loss()
 
-
 # ───────────────────────────────────────
-# Checkpoint Setup
+# Checkpoints
 # ───────────────────────────────────────
 checkpoint_dir = 'checkpoints'
 os.makedirs(checkpoint_dir, exist_ok=True)
 latest_path = os.path.join(checkpoint_dir, 'latest_model.pth')
 
-start_epoch = 0
-best_val_loss = float('inf')
-
+start_epoch, best_val_loss = 0, float('inf')
 if os.path.exists(latest_path):
-    checkpoint = torch.load(latest_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    start_epoch = checkpoint['epoch']
-    best_val_loss = checkpoint['val_loss']
-    print(f"Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
-
+    ckpt = torch.load(latest_path, map_location=device)
+    model.load_state_dict(ckpt['model_state_dict'])
+    optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+    start_epoch = ckpt['epoch']
+    best_val_loss = ckpt['val_loss']
+    print(f"Resumed from epoch {start_epoch} with val loss {best_val_loss:.6f}")
 
 # ───────────────────────────────────────
-# Init EarlyStopping
+# EarlyStopping & AMP
 # ───────────────────────────────────────
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
-
+scaler = torch.cuda.amp.GradScaler(enabled=(USE_AMP and device.type=='cuda'))
 
 # ───────────────────────────────────────
 # Training Loop
 # ───────────────────────────────────────
-epochs = 200
-for epoch in range(start_epoch, epochs):
-    print(f"\n Epoch [{epoch + 1}/{epochs}]")
+for epoch in range(start_epoch, EPOCHS):
+    print(f"\n Epoch [{epoch + 1}/{EPOCHS}]")
     model.train()
     train_losses = []
 
     for step, batch in enumerate(train_loader):
-        # unpack and move to device (robust to different dataset outputs)
-        try:
-            A, E, G, targets = unpack_batch(batch, device)
-        except Exception as e:
-            print("Error unpacking batch:", e)
-            raise
+        A, E, G, targets = unpack_batch(batch, device)
+
+        # Ensure consistent resolution
+        if (A.shape[-2], A.shape[-1]) != (IMG_SIZE, IMG_SIZE):
+            A = F.interpolate(A, (IMG_SIZE, IMG_SIZE), mode='bilinear', align_corners=False)
+            E = F.interpolate(E, (IMG_SIZE, IMG_SIZE), mode='bilinear', align_corners=False)
+            G = F.interpolate(G, (IMG_SIZE, IMG_SIZE), mode='bilinear', align_corners=False)
 
         optimizer.zero_grad()
-        outputs = model(A, E, G)
+        with torch.cuda.amp.autocast(enabled=(USE_AMP and device.type=='cuda')):
+            outputs = model(A, E, G)
 
-        l1 = l1_loss_fn(outputs, targets)
-        # pytorch_ssim.ssim returns a tensor; ensure scalar
-        try:
-            ssim_val = pytorch_ssim.ssim(outputs, targets)
-            if isinstance(ssim_val, torch.Tensor):
-                ssim_val = ssim_val.mean()
-        except Exception:
-            # fallback: if ssim fails for some shapes, set to zero so only L1 applied
-            ssim_val = torch.tensor(0.0, device=device)
+            # Match target size to outputs & ensure NCHW
+            targets = _ensure_nchw(targets)
+            if targets.shape[2:] != outputs.shape[2:]:
+                targets = F.interpolate(targets, size=outputs.shape[2:], mode='bilinear', align_corners=False)
 
-        tv = total_variation_loss(outputs)
+            l1 = l1_loss_fn(outputs, targets)
+            try:
+                ssim_val = pytorch_ssim.ssim(outputs, targets)
+                ssim_val = ssim_val.mean() if isinstance(ssim_val, torch.Tensor) else torch.tensor(float(ssim_val), device=device)
+            except Exception:
+                ssim_val = torch.tensor(0.0, device=device)
+            tv = total_variation_loss(outputs)
+            loss = l1 + (1 - ssim_val) + 0.001 * tv
 
-        # Final Loss: combine pixel, perceptual, and smoothness constraints
-        loss = l1 + (1 - ssim_val) + 0.001 * tv
-
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         train_losses.append(loss.item())
 
-    avg_train_loss = np.mean(train_losses) if len(train_losses) > 0 else float('nan')
+    avg_train_loss = np.mean(train_losses)
     print(f"Train Loss — Avg: {avg_train_loss:.6f}")
 
     # ────────────────────────────────
     # Validation
     # ────────────────────────────────
     model.eval()
-    val_l1 = []
-    val_ssim = []
-
+    val_l1, val_ssim = [], []
     with torch.no_grad():
         for batch in val_loader:
             A, E, G, targets = unpack_batch(batch, device)
+            if (A.shape[-2], A.shape[-1]) != (IMG_SIZE, IMG_SIZE):
+                A = F.interpolate(A, (IMG_SIZE, IMG_SIZE), mode='bilinear', align_corners=False)
+                E = F.interpolate(E, (IMG_SIZE, IMG_SIZE), mode='bilinear', align_corners=False)
+                G = F.interpolate(G, (IMG_SIZE, IMG_SIZE), mode='bilinear', align_corners=False)
+
             outputs = model(A, E, G)
+
+            targets = _ensure_nchw(targets)
+            if targets.shape[2:] != outputs.shape[2:]:
+                targets = F.interpolate(targets, size=outputs.shape[2:], mode='bilinear', align_corners=False)
+
             l1 = l1_loss_fn(outputs, targets)
             try:
                 ssim_score = pytorch_ssim.ssim(outputs, targets)
-                if isinstance(ssim_score, torch.Tensor):
-                    ssim_score = ssim_score.mean().item()
+                ssim_score = ssim_score.mean().item() if isinstance(ssim_score, torch.Tensor) else float(ssim_score)
             except Exception:
                 ssim_score = 0.0
+
             val_l1.append(l1.item())
             val_ssim.append(ssim_score)
 
-    avg_val_l1 = np.mean(val_l1) if len(val_l1) > 0 else float('nan')
-    avg_val_ssim = np.mean(val_ssim) if len(val_ssim) > 0 else float('nan')
-
+    avg_val_l1, avg_val_ssim = np.mean(val_l1), np.mean(val_ssim)
     print(f"Val L1: {avg_val_l1:.6f} | SSIM: {avg_val_ssim:.4f}")
 
     # ────────────────────────────────
-    # Save latest and best checkpoints
+    # Save checkpoints
     # ────────────────────────────────
     torch.save({
         'epoch': epoch + 1,
@@ -268,10 +383,7 @@ for epoch in range(start_epoch, epochs):
 
     if avg_val_l1 < best_val_loss:
         best_val_loss = avg_val_l1
-        best_model_path = os.path.join(
-            checkpoint_dir,
-            f"best_model_epoch_{epoch+1:02d}_val_{avg_val_l1:.4f}.pth"
-        )
+        best_model_path = os.path.join(checkpoint_dir, f"best_model_epoch_{epoch+1:02d}_val_{avg_val_l1:.4f}.pth")
         torch.save({
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
@@ -280,7 +392,6 @@ for epoch in range(start_epoch, epochs):
         }, best_model_path)
         print(f"New best model saved: {best_model_path}")
 
-    # EarlyStopping check
     early_stopper(avg_val_l1, model, epoch + 1, optimizer)
     if early_stopper.early_stop:
         print("Early stopping triggered. Training halted.")
