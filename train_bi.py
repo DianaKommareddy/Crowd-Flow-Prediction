@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from dataset import CrowdFlowDataset
-from models import BioInspiredModel   # <- your CNN + Transformer
+from models.BioInspiredModel import BioInspiredModel
 import os
 import numpy as np
 import pytorch_ssim  # SSIM Loss
