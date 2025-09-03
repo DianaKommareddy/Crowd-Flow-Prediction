@@ -45,28 +45,48 @@ class GroupedQueryAttention(nn.Module):
         assert dim % heads == 0, "dim must be divisible by heads"
         self.heads = heads
         self.groups = groups
-        self.scale = (dim // heads) ** -0.5
+        self.head_dim = dim // heads
+        self.scale = (self.head_dim) ** -0.5
+        # project q/k/v using conv; output channels = 3 * dim
         self.qkv = nn.Conv2d(dim, dim * 3, 1, bias=False)
         self.proj = nn.Conv2d(dim, dim, 1)
         self.drop = nn.Dropout(dropout)
 
     def forward(self, x):
         B, C, H, W = x.shape
-        qkv = self.qkv(x).reshape(B, 3, self.heads, C // self.heads, H * W)
-        q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]
-        q, k = F.normalize(q, dim=-1), F.normalize(k, dim=-1)
+        seq_len = H * W
+
+        # qkv: (B, 3*C, H, W) -> reshape to (B, 3, heads, seq_len, head_dim)
+        qkv = self.qkv(x).reshape(B, 3, self.heads, self.head_dim, seq_len)
+        # permute to (B, 3, heads, seq_len, head_dim)
+        qkv = qkv.permute(0, 1, 2, 4, 3).contiguous()
+        q = qkv[:, 0]  # (B, heads, seq_len, head_dim)
+        k = qkv[:, 1]
+        v = qkv[:, 2]
+
+        # normalize along head_dim
+        q = F.normalize(q, dim=-1)
+        k = F.normalize(k, dim=-1)
 
         hpg = self.heads // self.groups
         outs = []
+        # compute attention group-wise across head groups
         for g in range(self.groups):
-            qs = q[:, g*hpg:(g+1)*hpg]
-            ks = k[:, g*hpg:(g+1)*hpg]
-            vs = v[:, g*hpg:(g+1)*hpg]
+            qs = q[:, g*hpg:(g+1)*hpg]  # (B, hpg, seq_q, head_dim)
+            ks = k[:, g*hpg:(g+1)*hpg]  # (B, hpg, seq_k, head_dim)
+            vs = v[:, g*hpg:(g+1)*hpg]  # (B, hpg, seq_k, head_dim)
+
+            # attn: (B, hpg, seq_q, seq_k)
             attn = torch.matmul(qs, ks.transpose(-2, -1)) * self.scale
             attn = attn.softmax(dim=-1)
-            outs.append(torch.matmul(attn, vs))
+            # out: (B, hpg, seq_q, head_dim)
+            out_g = torch.matmul(attn, vs)
+            outs.append(out_g)
 
-        out = torch.cat(outs, dim=1).reshape(B, C, H, W)
+        # concat groups -> (B, heads, seq_len, head_dim)
+        out = torch.cat(outs, dim=1)
+        # reshape to (B, C, H, W)
+        out = out.permute(0, 1, 3, 2).reshape(B, C, H, W).contiguous()
         return self.drop(self.proj(out))
 
 
@@ -82,39 +102,68 @@ class LatentMixer(nn.Module):
         self.num_latents = num_latents
         self.latents = nn.Parameter(torch.randn(1, dim, 1, num_latents) * 0.02)
 
-        self.q_lat = nn.Conv2d(dim, dim, 1, bias=False)
-        self.kv_x  = nn.Conv2d(dim, dim*2, 1, bias=False)
-        self.q_x   = nn.Conv2d(dim, dim, 1, bias=False)
-        self.kv_lat= nn.Conv2d(dim, dim*2, 1, bias=False)
+        # projections
+        self.q_lat = nn.Conv2d(dim, dim, 1, bias=False)   # for latents
+        self.kv_x  = nn.Conv2d(dim, dim*2, 1, bias=False) # for features -> k,v
+        self.q_x   = nn.Conv2d(dim, dim, 1, bias=False)   # for features -> q
+        self.kv_lat= nn.Conv2d(dim, dim*2, 1, bias=False) # for latents -> k,v (when reading back)
 
         self.heads = heads
-        self.scale = (dim // heads) ** -0.5
+        self.head_dim = dim // heads
+        self.scale = (self.head_dim) ** -0.5
         self.proj = nn.Conv2d(dim, dim, 1)
         self.drop = nn.Dropout(dropout)
 
     def _attn(self, q, k, v):
-        q, k = F.normalize(q, dim=-1), F.normalize(k, dim=-1)
-        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-        return torch.matmul(attn.softmax(dim=-1), v)
+        """
+        q: (B, heads, seq_q, head_dim)
+        k: (B, heads, seq_k, head_dim)
+        v: (B, heads, seq_k, head_dim)
+        """
+        q = F.normalize(q, dim=-1)
+        k = F.normalize(k, dim=-1)
+        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # (B, heads, seq_q, seq_k)
+        out = torch.matmul(attn.softmax(dim=-1), v)              # (B, heads, seq_q, head_dim)
+        return out
 
     def forward(self, x):
         B, C, H, W = x.shape
         L = self.num_latents
+        seq = H * W
+
+        # expand latents -> (B, C, 1, L)
         lat = self.latents.expand(B, -1, 1, -1)
 
-        # Latents read from features
-        ql = self.q_lat(lat).reshape(B, self.heads, C // self.heads, L)
-        kx, vx = torch.chunk(self.kv_x(x), 2, dim=1)
-        kx = kx.reshape(B, self.heads, C // self.heads, H * W)
-        vx = vx.reshape(B, self.heads, C // self.heads, H * W)
-        lat_read = self._attn(ql, kx, vx).reshape(B, C, 1, L)
+        # --- Latents read from features (compression) ---
+        # ql: from latents -> (B, C, 1, L) -> reshape to (B, heads, L, head_dim)
+        ql = self.q_lat(lat).reshape(B, self.heads, self.head_dim, L).permute(0, 1, 3, 2).contiguous()
 
-        # Features read from updated latents
-        qx = self.q_x(x).reshape(B, self.heads, C // self.heads, H * W)
+        # kx, vx from x: (B, 2*C, H, W) -> chunk -> (B, C, H, W)
+        kx, vx = torch.chunk(self.kv_x(x), 2, dim=1)
+        # reshape to (B, heads, seq, head_dim)
+        kx = kx.reshape(B, self.heads, self.head_dim, seq).permute(0, 1, 3, 2).contiguous()
+        vx = vx.reshape(B, self.heads, self.head_dim, seq).permute(0, 1, 3, 2).contiguous()
+
+        # attend: latents (queries) read from features (keys/values)
+        # lat_read: (B, heads, L, head_dim)
+        lat_read = self._attn(ql, kx, vx)  # (B, heads, L, head_dim)
+        # reshape back to (B, C, 1, L)
+        lat_read = lat_read.permute(0, 1, 3, 2).reshape(B, C, 1, L).contiguous()
+
+        # --- Features read from updated latents (expansion) ---
+        # qx from features: (B, heads, seq, head_dim)
+        qx = self.q_x(x).reshape(B, self.heads, self.head_dim, seq).permute(0, 1, 3, 2).contiguous()
+
+        # kl, vl from lat_read: (B, 2*C, 1, L) -> chunk -> (B, C, 1, L)
         kl, vl = torch.chunk(self.kv_lat(lat_read), 2, dim=1)
-        kl = kl.reshape(B, self.heads, C // self.heads, L)
-        vl = vl.reshape(B, self.heads, C // self.heads, L)
-        x_write = self._attn(qx, kl, vl).reshape(B, C, H, W)
+        # reshape to (B, heads, L, head_dim)
+        kl = kl.reshape(B, self.heads, self.head_dim, L).permute(0, 1, 3, 2).contiguous()
+        vl = vl.reshape(B, self.heads, self.head_dim, L).permute(0, 1, 3, 2).contiguous()
+
+        # attend: features query latents -> (B, heads, seq, head_dim)
+        x_write = self._attn(qx, kl, vl)  # (B, heads, seq, head_dim)
+        # reshape back to (B, C, H, W)
+        x_write = x_write.permute(0, 1, 3, 2).reshape(B, C, H, W).contiguous()
 
         return self.drop(self.proj(x_write))
 
@@ -291,9 +340,9 @@ class BioCrowdFlowModel(nn.Module):
         return out
 
 
-# ============================================================
-# Quick sanity test
-# ============================================================
+# # ============================================================
+# # Quick sanity test
+# # ============================================================
 # if __name__ == "__main__":
 #     B, H, W = 2, 64, 64
 #     A = torch.randn(B, 1, H, W)
