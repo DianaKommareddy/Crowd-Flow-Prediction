@@ -10,9 +10,9 @@ from dataset import CustomDataset
 # ------------------------------
 # Hyperparameters
 # ------------------------------
-DATASET_DIR = "dataset"
+DATASET_DIR = "Train_Dataset"
 SAVE_PATH = "checkpoints/bioinspired_best.pt"
-BATCH_SIZE = 4
+BATCH_SIZE = 1
 EPOCHS = 20
 LEARNING_RATE = 1e-4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
