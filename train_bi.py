@@ -8,26 +8,49 @@ from models.BioInspiredModel import BioCrowdFlowModel
 from dataset import CustomDataset
 
 # ------------------------------
-# Hyperparameters
+# Hyperparameters & Setup
 # ------------------------------
 DATASET_DIR = "Train_Dataset"
 SAVE_PATH = "checkpoints/bioinspired_best.pt"
-BATCH_SIZE = 1
+BATCH_SIZE = 1               # small batch size for GPU memory
 EPOCHS = 20
 LEARNING_RATE = 1e-4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-model = BioCrowdFlowModel()
+# ------------------------------
+# Instantiate smaller model for memory savings
+# ------------------------------
+model = BioCrowdFlowModel(
+    dim=32,          # smaller dimension
+    heads=4,         # fewer heads
+    groups=2,        # fewer groups
+    num_latents=4,   # fewer latent tokens
+    decoder_depth=2  # fewer transformer blocks
+)
 model = model.to(DEVICE)
 
-train_dataset = CustomDataset(DATASET_DIR)
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+# ------------------------------
+# Dataset and DataLoader
+# ------------------------------
+train_dataset = CustomDataset(DATASET_DIR)  # uses 64x64 transform internally
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    num_workers=4
+)
 
-# For regression (float outputs)
+# ------------------------------
+# Loss and Optimizer
+# ------------------------------
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
+# ------------------------------
+# Training Loop
+# ------------------------------
 best_loss = float("inf")
+
 for epoch in range(EPOCHS):
     model.train()
     epoch_loss = 0.0
@@ -35,18 +58,23 @@ for epoch in range(EPOCHS):
         if isinstance(m, nn.GroupNorm):
             if BATCH_SIZE < m.num_groups:
                 print(f"[Warning] Batch size {BATCH_SIZE} < num_groups {m.num_groups} in GroupNorm → may destabilize training.")
+
     loop = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{EPOCHS}]", leave=True)
     for A, E, G, label in loop:
         A, E, G, label = A.to(DEVICE), E.to(DEVICE), G.to(DEVICE), label.to(DEVICE)
+
         optimizer.zero_grad()
         outputs = model(A, E, G)
         loss = criterion(outputs, label)
         loss.backward()
         optimizer.step()
+
         epoch_loss += loss.item()
         loop.set_postfix(loss=loss.item())
+
     avg_loss = epoch_loss / len(train_loader)
     print(f"Epoch [{epoch+1}/{EPOCHS}] - Avg Loss: {avg_loss:.4f}")
+
     if avg_loss < best_loss:
         best_loss = avg_loss
         os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True)
