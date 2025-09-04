@@ -1,35 +1,61 @@
 import os
-import numpy as np
 from PIL import Image
-import torch
 from torch.utils.data import Dataset
+from torchvision import transforms
+
 
 class CrowdFlowDataset(Dataset):
-    def __init__(self, root_dir):
-        self.agent_dir = os.path.join(root_dir, 'A')
-        self.env_dir = os.path.join(root_dir, 'E')
-        self.goal_dir = os.path.join(root_dir, 'G')
-        self.gt_dir = os.path.join(root_dir, 'Y')
-        self.filenames = sorted(os.listdir(self.agent_dir))
+    def __init__(self, root_dir, transform=None):
+        """
+        Args:
+            root_dir (string): Path to dataset root folder with subfolders A/, E/, G/, Y/
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.root_dir = root_dir
+        self.transform = transform
+
+        # Get sorted file lists from each folder
+        self.A_files = sorted(os.listdir(os.path.join(root_dir, "A")))
+        self.E_files = sorted(os.listdir(os.path.join(root_dir, "E")))
+        self.G_files = sorted(os.listdir(os.path.join(root_dir, "G")))
+        self.Y_files = sorted(os.listdir(os.path.join(root_dir, "Y")))
+
+        # Ensure all folders have equal number of files
+        assert len(self.A_files) == len(self.E_files) == len(self.G_files) == len(self.Y_files), \
+            "Mismatch in number of files between A, E, G, and Y"
 
     def __len__(self):
-        return len(self.filenames)
+        return len(self.A_files)
 
     def __getitem__(self, idx):
-        filename = self.filenames[idx]
+        # File paths
+        A_path = os.path.join(self.root_dir, "A", self.A_files[idx])
+        E_path = os.path.join(self.root_dir, "E", self.E_files[idx])
+        G_path = os.path.join(self.root_dir, "G", self.G_files[idx])
+        Y_path = os.path.join(self.root_dir, "Y", self.Y_files[idx])
 
-        def load_grayscale(path):
-            img = Image.open(path).convert('L')
-            img = img.resize((140, 140))  # Inputs and GT are both 140x140
-            return np.array(img, dtype=np.float32) / 255.0
+        # Open images as grayscale
+        A_img = Image.open(A_path).convert("L")  # "L" = grayscale
+        E_img = Image.open(E_path).convert("L")
+        G_img = Image.open(G_path).convert("L")
+        Y_img = Image.open(Y_path).convert("L")
 
-        agent = load_grayscale(os.path.join(self.agent_dir, filename))
-        env = load_grayscale(os.path.join(self.env_dir, filename))
-        goal = load_grayscale(os.path.join(self.goal_dir, filename))
-        gt = load_grayscale(os.path.join(self.gt_dir, filename))
+        # Apply transform if given
+        if self.transform:
+            A_img = self.transform(A_img)
+            E_img = self.transform(E_img)
+            G_img = self.transform(G_img)
+            Y_img = self.transform(Y_img)
 
-        # Stack inputs to form (9, 140, 140)
-        input_tensor = torch.tensor(np.stack([agent, env, goal] * 3), dtype=torch.float32)
-        gt_tensor = torch.tensor(gt[np.newaxis, :, :], dtype=torch.float32)  # (1, 140, 140)
+        return A_img, E_img, G_img, Y_img
 
-        return input_tensor, gt_tensor
+
+# Default transform (1-channel grayscale, resized, tensor)
+default_transform = transforms.Compose([
+    transforms.Grayscale(num_output_channels=1),  # ensures 1 channel
+    transforms.Resize((256, 256)),
+    transforms.ToTensor()
+])
+
+# Example usage:
+# dataset = CrowdFlowDataset(root_dir="Test Dataset", transform=default_transform)
