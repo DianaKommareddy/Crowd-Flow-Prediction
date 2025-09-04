@@ -1,100 +1,54 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
-import os
-
-from dataset import CrowdFlowDataset
+from tqdm import tqdm
 from models.BioInspiredModel import BioCrowdFlowModel
+from dataset import CustomDataset
 
-# ─────────────────────────────────────────────
-# Device setup
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Using device:", device)
+# ------------------------------
+# Hyperparameters
+# ------------------------------
+DATASET_DIR = "dataset"
+SAVE_PATH = "checkpoints/bioinspired_best.pt"
+BATCH_SIZE = 4
+EPOCHS = 20
+LEARNING_RATE = 1e-4
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ─────────────────────────────────────────────
-# Dataset
-transform = transforms.Compose([
-    transforms.Resize((128, 128)),   # reduced resolution to save memory
-    transforms.ToTensor()
-])
+model = BioCrowdFlowModel()
+model = model.to(DEVICE)
 
-dataset = CrowdFlowDataset(root_dir="Train_Dataset", transform=transform)
+train_dataset = CustomDataset(DATASET_DIR)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
 
-# Split into train/val
-val_split = 0.2
-val_size = int(len(dataset) * val_split)
-train_size = len(dataset) - val_size
-train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
-
-train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=2)  # batch=1 to avoid OOM
-val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=2)
-
-# ─────────────────────────────────────────────
-# Model, Loss, Optimizer
-model = BioCrowdFlowModel().to(device)
+# For regression (float outputs)
 criterion = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-scaler = torch.cuda.amp.GradScaler()  # mixed precision
-
-# ─────────────────────────────────────────────
-# Training loop
-num_epochs = 50
-best_val_loss = float("inf")
-save_dir = "checkpoints"
-os.makedirs(save_dir, exist_ok=True)
-
-for epoch in range(num_epochs):
-    # ---- Train ----
+best_loss = float("inf")
+for epoch in range(EPOCHS):
     model.train()
-    running_loss = 0.0
-    for A, E, G, targets in train_loader:
-        A, E, G, targets = A.to(device), E.to(device), G.to(device), targets.to(device)
-
+    epoch_loss = 0.0
+    for m in model.modules():
+        if isinstance(m, nn.GroupNorm):
+            if BATCH_SIZE < m.num_groups:
+                print(f"[Warning] Batch size {BATCH_SIZE} < num_groups {m.num_groups} in GroupNorm → may destabilize training.")
+    loop = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{EPOCHS}]", leave=True)
+    for A, E, G, label in loop:
+        A, E, G, label = A.to(DEVICE), E.to(DEVICE), G.to(DEVICE), label.to(DEVICE)
         optimizer.zero_grad()
-        with torch.cuda.amp.autocast():   # mixed precision
-            outputs = model(A, E, G)
-            loss = criterion(outputs, targets)
-
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-
-        running_loss += loss.item()
-
-    train_loss = running_loss / len(train_loader)
-
-    # ---- Validate ----
-    model.eval()
-    val_loss = 0.0
-    with torch.no_grad():
-        for A, E, G, targets in val_loader:
-            A, E, G, targets = A.to(device), E.to(device), G.to(device), targets.to(device)
-            with torch.cuda.amp.autocast():
-                outputs = model(A, E, G)
-                loss = criterion(outputs, targets)
-            val_loss += loss.item()
-
-    val_loss /= len(val_loader)
-
-    # Scheduler step
-    scheduler.step()
-
-    print(f"Epoch [{epoch+1}/{num_epochs}] | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
-
-    # ---- Save best model ----
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        save_path = os.path.join(save_dir, "bioinspired_best.pth")
-        torch.save({
-            "epoch": epoch + 1,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "val_loss": val_loss,
-        }, save_path)
-        print(f"✅ Saved new best model to {save_path}")
-
-print("🎉 Training finished!")
+        outputs = model(A, E, G)
+        loss = criterion(outputs, label)
+        loss.backward()
+        optimizer.step()
+        epoch_loss += loss.item()
+        loop.set_postfix(loss=loss.item())
+    avg_loss = epoch_loss / len(train_loader)
+    print(f"Epoch [{epoch+1}/{EPOCHS}] - Avg Loss: {avg_loss:.4f}")
+    if avg_loss < best_loss:
+        best_loss = avg_loss
+        os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True)
+        torch.save(model.state_dict(), SAVE_PATH)
+        print(f"✅ Best model saved at {SAVE_PATH} (loss={best_loss:.4f})")
