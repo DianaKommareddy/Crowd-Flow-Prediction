@@ -1,196 +1,76 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
-from dataset import CrowdFlowDataset
-from models import BioInspiredModel   # <- your CNN + Transformer
+from torch.utils.data import DataLoader
+from torchvision import transforms
 import os
-import numpy as np
-import pytorch_ssim  # SSIM Loss
+
+from dataset import CrowdFlowDataset, default_transform
+from models.BioInspiredModel import BioCrowdFlowModel
 
 
-# ───────────────────────────────────────
-# EarlyStopping Utility
-# ───────────────────────────────────────
-class EarlyStopping:
-    def __init__(self, patience=10, min_delta=1e-4, path='checkpoints/best_model.pth', verbose=True):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-        self.path = path
-        self.verbose = verbose
-
-    def __call__(self, val_loss, model, epoch, optimizer):
-        if self.best_score is None:
-            self.best_score = val_loss
-            self.save_checkpoint(val_loss, model, epoch, optimizer)
-        elif val_loss < self.best_score - self.min_delta:
-            self.best_score = val_loss
-            self.counter = 0
-            self.save_checkpoint(val_loss, model, epoch, optimizer)
-        else:
-            self.counter += 1
-            if self.verbose:
-                print(f"EarlyStopping counter: {self.counter} / {self.patience}")
-            if self.counter >= self.patience:
-                self.early_stop = True
-
-    def save_checkpoint(self, val_loss, model, epoch, optimizer):
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'val_loss': val_loss
-        }, self.path)
-        if self.verbose:
-            print(f"✔️ EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
-
-
-# ───────────────────────────────────────
-# Total Variation Loss
-# ───────────────────────────────────────
-def total_variation_loss(img):
-    tv_h = torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]))
-    tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
-    return tv_h + tv_w
-
-
-# ───────────────────────────────────────
+# -----------------------------
 # Device Setup
-# ───────────────────────────────────────
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# -----------------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 
-# ───────────────────────────────────────
-# Load Dataset
-# ───────────────────────────────────────
-dataset = CrowdFlowDataset(root_dir='dataset')
+# -----------------------------
+# Dataset & DataLoader
+# -----------------------------
+train_dataset = CrowdFlowDataset(
+    root_dir="Train_Dataset",   # 👈 change path if needed
+    transform=default_transform
+)
 
-val_ratio = 0.1
-val_size = int(len(dataset) * val_ratio)
-train_size = len(dataset) - val_size
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-
-batch_size = 4
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
-val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
-
-
-# ───────────────────────────────────────
-# Model, Optimizer, Losses
-# ───────────────────────────────────────
-model = BioInspiredModel().to(device)
-
-optimizer = optim.Adam(model.parameters(), lr=2e-4)
-l1_loss_fn = nn.L1Loss()
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=8,  # adjust to GPU memory
+    shuffle=True,
+    num_workers=2
+)
 
 
-# ───────────────────────────────────────
-# Checkpoint Setup
-# ───────────────────────────────────────
-checkpoint_dir = 'checkpoints'
-os.makedirs(checkpoint_dir, exist_ok=True)
-latest_path = os.path.join(checkpoint_dir, 'latest_model.pth')
+# -----------------------------
+# Model, Loss, Optimizer
+# -----------------------------
+model = BioCrowdFlowModel().to(device)
 
-start_epoch = 0
-best_val_loss = float('inf')
-
-if os.path.exists(latest_path):
-    checkpoint = torch.load(latest_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    start_epoch = checkpoint['epoch']
-    best_val_loss = checkpoint['val_loss']
-    print(f"Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
+criterion = nn.MSELoss()  # assuming regression on Y (density/flow map)
+optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
 
-# ───────────────────────────────────────
-# Init EarlyStopping
-# ───────────────────────────────────────
-early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
-
-
-# ───────────────────────────────────────
+# -----------------------------
 # Training Loop
-# ───────────────────────────────────────
-epochs = 200
-for epoch in range(start_epoch, epochs):
-    print(f"\n Epoch [{epoch + 1}/{epochs}]")
+# -----------------------------
+num_epochs = 20  # adjust as needed
+save_path = "checkpoints/bioinspired_best.pth"
+os.makedirs("checkpoints", exist_ok=True)
+
+for epoch in range(num_epochs):
     model.train()
-    train_losses = []
+    running_loss = 0.0
 
-    for step, (inputs, targets) in enumerate(train_loader):
-        inputs, targets = inputs.to(device), targets.to(device)
+    for batch in train_loader:
+        A, E, G, Y = batch
+        A, E, G, Y = A.to(device), E.to(device), G.to(device), Y.to(device)
 
+        # Forward
+        outputs = model(A, E, G)
+        loss = criterion(outputs, Y)
+
+        # Backward
         optimizer.zero_grad()
-        outputs = model(inputs)
-
-        l1 = l1_loss_fn(outputs, targets)
-        ssim_val = pytorch_ssim.ssim(outputs, targets)
-        tv = total_variation_loss(outputs)
-
-        # Final Loss: combine pixel, perceptual, and smoothness constraints
-        loss = l1 + (1 - ssim_val) + 0.001 * tv
-
         loss.backward()
         optimizer.step()
-        train_losses.append(loss.item())
 
-    avg_train_loss = np.mean(train_losses)
-    print(f"Train Loss — Avg: {avg_train_loss:.6f}")
+        running_loss += loss.item()
 
-    # ────────────────────────────────
-    # Validation
-    # ────────────────────────────────
-    model.eval()
-    val_l1 = []
-    val_ssim = []
+    epoch_loss = running_loss / len(train_loader)
+    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {epoch_loss:.4f}")
 
-    with torch.no_grad():
-        for inputs, targets in val_loader:
-            inputs, targets = inputs.to(device), targets.to(device)
-            outputs = model(inputs)
-            l1 = l1_loss_fn(outputs, targets)
-            ssim_score = pytorch_ssim.ssim(outputs, targets)
-            val_l1.append(l1.item())
-            val_ssim.append(ssim_score.item())
+    # Save best model
+    torch.save(model.state_dict(), save_path)
 
-    avg_val_l1 = np.mean(val_l1)
-    avg_val_ssim = np.mean(val_ssim)
-
-    print(f"Val L1: {avg_val_l1:.6f} | SSIM: {avg_val_ssim:.4f}")
-
-    # ────────────────────────────────
-    # Save latest and best checkpoints
-    # ────────────────────────────────
-    torch.save({
-        'epoch': epoch + 1,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'val_loss': avg_val_l1
-    }, latest_path)
-
-    if avg_val_l1 < best_val_loss:
-        best_val_loss = avg_val_l1
-        best_model_path = os.path.join(
-            checkpoint_dir,
-            f"best_model_epoch_{epoch+1:02d}_val_{avg_val_l1:.4f}.pth"
-        )
-        torch.save({
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'val_loss': best_val_loss
-        }, best_model_path)
-        print(f"New best model saved: {best_model_path}")
-
-    # EarlyStopping check
-    early_stopper(avg_val_l1, model, epoch + 1, optimizer)
-    if early_stopper.early_stop:
-        print("Early stopping triggered. Training halted.")
-        break
-
-print("\n Training complete!")
+print("Training complete! Model saved at:", save_path)
