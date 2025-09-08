@@ -12,8 +12,8 @@ from dataset import CustomDataset
 # ------------------------------
 DATASET_DIR = "Train_Dataset"
 SAVE_PATH = "checkpoints/bioinspired_best.pt"
-BATCH_SIZE = 1               # small batch size for GPU memory
-EPOCHS = 35
+BATCH_SIZE = 4               # small batch size for GPU memory
+EPOCHS = 200
 LEARNING_RATE = 1e-4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
