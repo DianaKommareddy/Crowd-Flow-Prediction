@@ -12,7 +12,7 @@ from dataset import CustomDataset
 # ------------------------------
 DATASET_DIR = "dataset"
 SAVE_PATH = "checkpoints/bioinspired_best.pt"
-BATCH_SIZE = 1              # small batch size for GPU memory
+BATCH_SIZE = 16   # or a larger value your GPU can support      
 EPOCHS = 200
 LEARNING_RATE = 1e-4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,8 +41,10 @@ train_loader = DataLoader(
     train_dataset,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    num_workers=4
+    num_workers=8,   # increase according to CPU cores
+    pin_memory=True  # improves transfer speed to GPU
 )
+    
 
 # ------------------------------
 # Loss and Optimizer
