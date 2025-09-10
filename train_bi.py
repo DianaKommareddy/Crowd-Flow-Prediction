@@ -13,66 +13,67 @@ from torch.cuda.amp import GradScaler, autocast
 # ------------------------------
 DATASET_DIR = "dataset"
 SAVE_PATH = "checkpoints/bioinspired_best.pt"
-BATCH_SIZE = 32  # or larger depending on your GPU memory      
+BATCH_SIZE = 64   # try doubling batch size for fewer steps if GPU allows
 EPOCHS = 200
 LEARNING_RATE = 1e-4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Enable cudnn benchmark for fixed size inputs to optimize GPU performance
 torch.backends.cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = True   # allow TensorFloat-32 (faster matmul on Ampere+)
+torch.backends.cudnn.allow_tf32 = True
 
 # Early stopping parameters
-PATIENCE = 10               # Number of epochs to wait for improvement
-MIN_DELTA = 1e-5           # Minimum change to qualify as improvement
+PATIENCE = 10
+MIN_DELTA = 1e-5
 
 # ------------------------------
-# Instantiate smaller model for memory savings
+# Model
 # ------------------------------
 model = BioCrowdFlowModel(
-    dim=32,          # smaller dimension
-    heads=4,         # fewer heads
-    groups=2,        # fewer groups
-    num_latents=4,   # fewer latent tokens
-    decoder_depth=2  # fewer transformer blocks
-)
-model = model.to(DEVICE)
+    dim=32,
+    heads=4,
+    groups=2,
+    num_latents=4,
+    decoder_depth=2
+).to(DEVICE)
+
+# Channels-last memory format (helps on Ampere+ GPUs)
+model = model.to(memory_format=torch.channels_last)
+
+# PyTorch 2.0 compile (speeds up training, esp. on GPU)
+if hasattr(torch, "compile"):
+    model = torch.compile(model)
 
 # ------------------------------
 # Dataset and DataLoader
 # ------------------------------
-train_dataset = CustomDataset(DATASET_DIR)  # uses 64x64 transform internally
+train_dataset = CustomDataset(DATASET_DIR)
+
 train_loader = DataLoader(
     train_dataset,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    num_workers=12,         # adjust per your CPU cores
-    pin_memory=True,        # speeds up transfer to GPU
-    persistent_workers=True # keeps workers alive to reduce overhead
+    num_workers=8,           # reduce workers if CPU is slow
+    pin_memory=True,
+    prefetch_factor=4,       # prefetch batches
+    persistent_workers=True
 )
 
 # ------------------------------
 # Loss and Optimizer
 # ------------------------------
 criterion = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE)  # AdamW often faster & stabler
 
-# ------------------------------
-# Early stopping setup
-# ------------------------------
+# Early stopping
 best_loss = float("inf")
 patience_counter = 0
 
-# AMP scaler for mixed precision training
+# AMP scaler
 scaler = GradScaler()
 
-# Warn about GroupNorm + batch size issues
-for m in model.modules():
-    if isinstance(m, nn.GroupNorm):
-        if BATCH_SIZE < m.num_groups:
-            print(f"[Warning] Batch size {BATCH_SIZE} < num_groups {m.num_groups} in GroupNorm → may destabilize training.")
-
 # ------------------------------
-# Training Loop with Early Stopping and AMP
+# Training Loop
 # ------------------------------
 for epoch in range(EPOCHS):
     model.train()
@@ -80,10 +81,16 @@ for epoch in range(EPOCHS):
 
     loop = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{EPOCHS}]", leave=True)
     for A, E, G, label in loop:
-        A, E, G, label = A.to(DEVICE), E.to(DEVICE), G.to(DEVICE), label.to(DEVICE)
+        # Move data async for speed
+        A, E, G, label = (
+            A.to(DEVICE, non_blocking=True).to(memory_format=torch.channels_last),
+            E.to(DEVICE, non_blocking=True).to(memory_format=torch.channels_last),
+            G.to(DEVICE, non_blocking=True).to(memory_format=torch.channels_last),
+            label.to(DEVICE, non_blocking=True)
+        )
 
-        optimizer.zero_grad()
-        with autocast():
+        optimizer.zero_grad(set_to_none=True)  # faster than zero_grad()
+        with autocast(dtype=torch.float16):   # force FP16 for extra speed
             outputs = model(A, E, G)
             loss = criterion(outputs, label)
 
@@ -97,7 +104,7 @@ for epoch in range(EPOCHS):
     avg_loss = epoch_loss / len(train_loader)
     print(f"Epoch [{epoch+1}/{EPOCHS}] - Avg Loss: {avg_loss:.6f}")
 
-    # Check for improvement
+    # Save best model
     if avg_loss < best_loss - MIN_DELTA:
         best_loss = avg_loss
         patience_counter = 0
@@ -108,9 +115,8 @@ for epoch in range(EPOCHS):
         patience_counter += 1
         print(f"No improvement. Patience: {patience_counter}/{PATIENCE}")
 
-    # Early stopping check
     if patience_counter >= PATIENCE:
-        print(f"🔴 Early stopping triggered after {epoch+1} epochs!")
+        print(f"🔴 Early stopping after {epoch+1} epochs!")
         print(f"Best loss achieved: {best_loss:.6f}")
         break
 
