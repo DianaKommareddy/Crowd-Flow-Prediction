@@ -10,7 +10,7 @@ from dataset import CustomDataset
 # ------------------------------
 # Hyperparameters & Setup
 # ------------------------------
-DATASET_DIR = "Train_Dataset"
+DATASET_DIR = "dataset"
 SAVE_PATH = "checkpoints/bioinspired_best.pt"
 BATCH_SIZE = 1              # small batch size for GPU memory
 EPOCHS = 200
