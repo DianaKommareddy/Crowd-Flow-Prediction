@@ -41,7 +41,7 @@ train_loader = DataLoader(
     train_dataset,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    num_workers=8,   # increase according to CPU cores
+    num_workers=12,   # increase according to CPU cores
     pin_memory=True  # improves transfer speed to GPU
 )
     
