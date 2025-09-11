@@ -19,7 +19,6 @@ CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, "Bioinspired_best.pt")
 BATCH_SIZE = 4
 EPOCHS = 200
 LEARNING_RATE = 1e-4
-
 # -----------------------------
 # Dataset and DataLoader
 # -----------------------------
@@ -56,22 +55,34 @@ patience_counter = 0
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 # -----------------------------
+# Checkpoint loading & resume setup
+# -----------------------------
+start_epoch = 0
+if os.path.exists(CHECKPOINT_PATH):
+    print("Loading checkpoint...")
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    start_epoch = checkpoint['epoch'] + 1
+    best_loss = checkpoint.get('loss', float('inf'))
+    print(f"Resuming from epoch {start_epoch} with best loss {best_loss:.6f}")
+else:
+    print("No checkpoint found, starting from scratch.")
+
+# -----------------------------
 # Training Loop
 # -----------------------------
-for epoch in range(EPOCHS):
+for epoch in range(start_epoch, EPOCHS):
     model.train()
     epoch_loss = 0.0
-
     loop = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{EPOCHS}]", leave=True)
     for A, E, G, label in loop:
         A, E, G, label = A.to(device), E.to(device), G.to(device), label.to(device)
-
         optimizer.zero_grad()
-        outputs, saliency = model(A, E, G)  # saliency output also available if needed
+        outputs, saliency = model(A, E, G)
         loss = criterion(outputs, label)
         loss.backward()
         optimizer.step()
-
         epoch_loss += loss.item()
         loop.set_postfix(loss=loss.item())
 
@@ -82,7 +93,12 @@ for epoch in range(EPOCHS):
     if avg_loss < best_loss - MIN_DELTA:
         best_loss = avg_loss
         patience_counter = 0
-        torch.save(model.state_dict(), CHECKPOINT_PATH)
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': best_loss,
+        }, CHECKPOINT_PATH)
         print(f"✅ Saved improved checkpoint at epoch {epoch+1} with loss {best_loss:.6f}")
     else:
         patience_counter += 1
