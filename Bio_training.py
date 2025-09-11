@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 import os
 from dataset import CustomDataset
-from models.BioInspiredModel import BioCrowdFlowModel
+from models.Bio_Transformer import BioCrowdFlowModel
 import torchvision.utils as vutils
 import torch.nn.functional as F
 
