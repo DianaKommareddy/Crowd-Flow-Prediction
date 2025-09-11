@@ -17,7 +17,7 @@ DATASET_DIR = "dataset"        # Your training data directory
 CHECKPOINT_DIR = "checkpoints"
 CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, "Bioinspired_best.pt")
 BATCH_SIZE = 4
-EPOCHS = 200
+EPOCHS = 60
 LEARNING_RATE = 1e-4
 # -----------------------------
 # Dataset and DataLoader
