@@ -99,13 +99,13 @@ for epoch in range(start_epoch, EPOCHS):
             'optimizer_state_dict': optimizer.state_dict(),
             'loss': best_loss,
         }, CHECKPOINT_PATH)
-        print(f"✅ Saved improved checkpoint at epoch {epoch+1} with loss {best_loss:.6f}")
+        print(f"Saved improved checkpoint at epoch {epoch+1} with loss {best_loss:.6f}")
     else:
         patience_counter += 1
         print(f"No improvement. Patience {patience_counter}/{PATIENCE}")
 
     if patience_counter >= PATIENCE:
-        print("🔴 Early stopping triggered.")
+        print("Early stopping triggered.")
         break
 
-print("✅ Training complete.")
+print("Training complete.")
