@@ -72,7 +72,9 @@ with torch.no_grad():
         mae_list.append(mae)
         ssim_list.append(ssim_val)
 
+#------------------------------------------------------
 # Print final metrics
+#------------------------------------------------------
 print(f"\nAverage MSE: {np.mean(mse_list):.6f}")
 print(f"Average MAE: {np.mean(mae_list):.6f}")
 print(f"Average SSIM: {np.mean(ssim_list):.4f}")
