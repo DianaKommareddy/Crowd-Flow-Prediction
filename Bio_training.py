@@ -7,13 +7,13 @@ from dataset import CustomDataset
 from models.Bio_Transformer import BioCrowdFlowModel
 from tqdm import tqdm
 
-# Optional SSIM calculation
+# Use torchvision SSIM for better compatibility
 try:
-    import pytorch_ssim
+    from torchvision.metrics import StructuralSimilarityIndexMeasure
     has_ssim = True
-    ssim_loss = pytorch_ssim.SSIM()
+    ssim_loss = StructuralSimilarityIndexMeasure().to('cuda' if torch.cuda.is_available() else 'cpu')
 except ImportError:
-    print("pytorch-ssim not installed, SSIM will be skipped. Run: pip install pytorch-ssim")
+    print("torchvision SSIM not installed, SSIM will be skipped.")
     has_ssim = False
     ssim_loss = None
 
