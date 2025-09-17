@@ -25,24 +25,23 @@ class CustomDataset(Dataset):
         return len(self.image_files)
 
     def __getitem__(self, idx):
-        A_path = os.path.join(self.A_dir, self.image_files[idx])
-        E_path = os.path.join(self.E_dir, self.image_files[idx])
-        G_path = os.path.join(self.G_dir, self.image_files[idx])
-        Y_path = os.path.join(self.Y_dir, self.image_files[idx])
+    A_path = os.path.join(self.A_dir, self.image_files[idx])
+    E_path = os.path.join(self.E_dir, self.image_files[idx])
+    G_path = os.path.join(self.G_dir, self.image_files[idx])
+    Y_path = os.path.join(self.Y_dir, self.image_files[idx])
+    # Load images
+    A = Image.open(A_path).convert("RGB")
+    E = Image.open(E_path).convert("RGB")
+    G = Image.open(G_path).convert("RGB")
+    Y = Image.open(Y_path).convert("L")  # Grayscale for target
+    A = self.transform(A)
+    E = self.transform(E)
+    G = self.transform(G)
+    Y = transforms.Compose([
+        transforms.Resize((64, 64)),
+        transforms.ToTensor()
+    ])(Y)
+    # Concatenate the input tensors along channel dimension
+    input_tensor = torch.cat([A, E, G], dim=0)
+    return input_tensor, Y
 
-        # Load images
-        A = Image.open(A_path).convert("RGB")
-        E = Image.open(E_path).convert("RGB")
-        G = Image.open(G_path).convert("RGB")
-        Y = Image.open(Y_path).convert("L")  # Keep grayscale for target
-
-        A = self.transform(A)
-        E = self.transform(E)
-        G = self.transform(G)
-
-        Y = transforms.Compose([
-            transforms.Resize((64, 64)),
-            transforms.ToTensor()
-        ])(Y)
-
-        return A, E, G, Y
