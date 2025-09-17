@@ -13,11 +13,10 @@ class CustomDataset(Dataset):
         self.image_files = sorted(os.listdir(self.A_dir))
 
         if transform is None:
-            # Resize input images smaller to 64x64 to reduce memory
             self.transform = transforms.Compose([
                 transforms.Resize((64, 64)),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5])
+                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
             ])
         else:
             self.transform = transform
@@ -31,15 +30,19 @@ class CustomDataset(Dataset):
         G_path = os.path.join(self.G_dir, self.image_files[idx])
         Y_path = os.path.join(self.Y_dir, self.image_files[idx])
 
-        # Load grayscale images (single channel)
-        A = Image.open(A_path).convert("L")
-        E = Image.open(E_path).convert("L")
-        G = Image.open(G_path).convert("L")
-        Y = Image.open(Y_path).convert("L")
+        # Load images
+        A = Image.open(A_path).convert("RGB")
+        E = Image.open(E_path).convert("RGB")
+        G = Image.open(G_path).convert("RGB")
+        Y = Image.open(Y_path).convert("L")  # Keep grayscale for target
 
         A = self.transform(A)
         E = self.transform(E)
         G = self.transform(G)
-        Y = self.transform(Y)
+
+        Y = transforms.Compose([
+            transforms.Resize((64, 64)),
+            transforms.ToTensor()
+        ])(Y)
 
         return A, E, G, Y
