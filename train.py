@@ -117,7 +117,7 @@ best_val_loss = float('inf')
 
 latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
 if os.path.exists(latest_path):
-    checkpoint = torch.load(latest_path, map_location=device)
+    checkpoint = torch.load(pretrain_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint['epoch']
