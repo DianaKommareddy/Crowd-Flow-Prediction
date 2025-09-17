@@ -74,7 +74,6 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pi
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
 # Instantiate model with correct dim (adjust dim if needed)
-print(f"Inputs tensor size: {input.shape}") 
 model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(device)
 
 # Skip loading any pretrained weights to train from scratch
@@ -106,6 +105,7 @@ for epoch in range(start_epoch, epochs):
     train_losses = []
 
     for step, (inputs, targets) in enumerate(train_loader):
+        print(f"Inputs tensor size: {inputs.shape}")
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
