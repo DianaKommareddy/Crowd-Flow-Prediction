@@ -296,39 +296,32 @@ class HINT(nn.Module):
 
     def forward(self, inp_img):
         inp_enc_level1 = self.patch_embed(inp_img)
-
         out_enc_level1, self.qv_cache = self.encoder_level1([inp_enc_level1, self.qv_cache])
         inp_enc_level2 = self.down1_2(out_enc_level1)
-
         out_enc_level2, self.qv_cache = self.encoder_level2([inp_enc_level2, self.qv_cache])
         inp_enc_level3 = self.down2_3(out_enc_level2)
-
         out_enc_level3, self.qv_cache = self.encoder_level3([inp_enc_level3, self.qv_cache])
         inp_enc_level4 = self.down3_4(out_enc_level3)
-
         latent, self.qv_cache = self.latent([inp_enc_level4, self.qv_cache])
-
         inp_dec_level3 = self.up4_3(latent)
         inp_dec_level3 = torch.cat([inp_dec_level3, out_enc_level3], dim=1)
         inp_dec_level3 = self.reduce_chan_level3(inp_dec_level3)
-
         out_dec_level3, self.qv_cache = self.decoder_level3([inp_dec_level3, self.qv_cache])
         inp_dec_level2 = self.up3_2(out_dec_level3)
         inp_dec_level2 = torch.cat([inp_dec_level2, out_enc_level2], dim=1)
         inp_dec_level2 = self.reduce_chan_level2(inp_dec_level2)
-
         out_dec_level2, self.qv_cache = self.decoder_level2([inp_dec_level2, self.qv_cache])
         inp_dec_level1 = self.up2_1(out_dec_level2)
         inp_dec_level1 = torch.cat([inp_dec_level1, out_enc_level1], dim=1)
-
         out_dec_level1, self.qv_cache = self.decoder_level1([inp_dec_level1, self.qv_cache])
-
         out_dec_level1, self.qv_cache = self.refinement([out_dec_level1, self.qv_cache])
-
+    
         if self.dual_pixel_task:
             out_dec_level1 = out_dec_level1 + self.skip_conv(inp_enc_level1)
             out_dec_level1 = self.output(out_dec_level1)
         else:
-            out_dec_level1 = self.output(out_dec_level1) + inp_img
-
+            # Add only the first channel of input tensor to output to keep channel consistent
+            out_dec_level1 = self.output(out_dec_level1) + inp_img[:, :1, :, :]
+    
         return out_dec_level1
+
