@@ -228,8 +228,8 @@ class Upsample(nn.Module):
 # Full HINT model integrating cache and modulation
 class HINT(nn.Module):
     def __init__(self, 
-                 inp_channels=3, 
-                 out_channels=3, 
+                 inp_channels=9, 
+                 out_channels=1, 
                  dim=48,
                  num_blocks=[4,6,6,8], 
                  num_refinement_blocks=4,
