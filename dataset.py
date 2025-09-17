@@ -14,7 +14,7 @@ class CustomDataset(Dataset):
         self.image_files = sorted(os.listdir(self.A_dir))
         if transform is None:
             self.transform = transforms.Compose([
-                transforms.Resize((64, 64)),
+                transforms.Resize((128, 128)),  # Changed here from (64, 64)
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
             ])
@@ -22,7 +22,7 @@ class CustomDataset(Dataset):
             self.transform = transform
         # Separate transform for Y, grayscale target images
         self.target_transform = transforms.Compose([
-            transforms.Resize((64, 64)),
+            transforms.Resize((128, 128)),  # Changed here from (64, 64)
             transforms.ToTensor()
         ])
 
@@ -41,13 +41,13 @@ class CustomDataset(Dataset):
         G = Image.open(G_path).convert("RGB")
         Y = Image.open(Y_path).convert("L")  # Grayscale for target
 
-        # Assert to check image size before transform (optional and can be removed in production)
+        # Assert to check original image size before transform (optional)
         assert A.size == (140, 140), f"Input image A size must be 140x140, got {A.size}"
         assert E.size == (140, 140), f"Input image E size must be 140x140, got {E.size}"
         assert G.size == (140, 140), f"Input image G size must be 140x140, got {G.size}"
         assert Y.size == (140, 140), f"Target image Y size must be 140x140, got {Y.size}"
 
-        # Apply transforms (resize to 64x64 and normalization)
+        # Apply transforms (resize to 128x128 and normalization)
         A = self.transform(A)
         E = self.transform(E)
         G = self.transform(G)
