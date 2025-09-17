@@ -10,7 +10,6 @@ import numpy as np
 from torch.optim.lr_scheduler import StepLR
 import piq  # pip install piq
 
-
 # EarlyStopping Utility
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0.0, path='checkpoints/best_model_earlystop.pth', verbose=True):
@@ -21,7 +20,6 @@ class EarlyStopping:
         self.early_stop = False
         self.path = path
         self.verbose = verbose
-
     def __call__(self, val_loss, model, epoch, optimizer):
         if self.best_score is None:
             self.best_score = val_loss
@@ -36,7 +34,6 @@ class EarlyStopping:
                 print(f"EarlyStopping counter: {self.counter} / {self.patience}")
             if self.counter >= self.patience:
                 self.early_stop = True
-
     def save_checkpoint(self, val_loss, model, epoch, optimizer):
         torch.save({
             'epoch': epoch,
@@ -47,22 +44,18 @@ class EarlyStopping:
         if self.verbose:
             print(f"EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
 
-
 # Total Variation Loss
 def total_variation_loss(img):
     tv_h = torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]))
     tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
     return tv_h + tv_w
 
-
 # Transforms without augmentation
 train_per_image_transform = transforms.ToTensor()
 val_per_image_transform = transforms.ToTensor()
 
-
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
-
 
 # Dataset initialization without augmentation
 dataset = CustomDataset(
@@ -70,65 +63,42 @@ dataset = CustomDataset(
     transform=train_per_image_transform
 )
 
-
 val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 val_dataset.dataset.transform = val_per_image_transform
 
-
 batch_size = 4
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
+# Instantiate model with correct dim (adjust dim if needed)
+model = RestormerCrowdFlow(dim=32).to(device)  # Use dim=32 to avoid mismatch if checkpoint incompatible
 
-model = RestormerCrowdFlow(dim=256).to(device)
+# Skip loading any pretrained weights to train from scratch
+print("Training from scratch without loading any pre-trained weights.")
 
-
-# Load pre-trained weights if available for fine-tuning
-pretrain_path = 'checkpoints/restormer_best.pth'
-if os.path.exists(pretrain_path):
-    print(f"Loading pre-trained weights for fine-tuning from {pretrain_path}")
-    checkpoint = torch.load(pretrain_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
-else:
-    print("No pre-trained checkpoint provided, training from scratch.")
-
-
-# Unfreeze all layers for fine-tuning
+# Unfreeze all layers for training
 for param in model.parameters():
     param.requires_grad = True
-
 
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
 
-
 mae_loss_fn = nn.L1Loss()
 mse_loss_fn = nn.MSELoss()
-
 
 checkpoint_dir = 'checkpoints'
 os.makedirs(checkpoint_dir, exist_ok=True)
 start_epoch = 0
 best_val_loss = float('inf')
 
-
 latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
-if os.path.exists(latest_path):
-    checkpoint = torch.load(pretrain_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    start_epoch = checkpoint['epoch']
-    best_val_loss = checkpoint['val_loss']
-    print(f"Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
-
 
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
-
-
 epochs = 20
+
 for epoch in range(start_epoch, epochs):
     print(f"\nEpoch [{epoch + 1}/{epochs}]")
     model.train()
