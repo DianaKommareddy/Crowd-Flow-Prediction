@@ -74,7 +74,7 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pi
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
 # Instantiate model with correct dim (adjust dim if needed)
-model = RestormerCrowdFlow(dim=32).to(device)  # Use dim=32 to avoid mismatch if checkpoint incompatible
+model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(device)
 
 # Skip loading any pretrained weights to train from scratch
 print("Training from scratch without loading any pre-trained weights.")
