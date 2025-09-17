@@ -128,7 +128,7 @@ if os.path.exists(latest_path):
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
 
 
-epochs = 200
+epochs = 20
 for epoch in range(start_epoch, epochs):
     print(f"\nEpoch [{epoch + 1}/{epochs}]")
     model.train()
