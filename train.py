@@ -90,7 +90,7 @@ model = RestormerCrowdFlow().to(device)
 pretrain_path = 'checkpoints/restormer_best.pth'
 if os.path.exists(pretrain_path):
     print(f"Loading pre-trained weights for fine-tuning from {pretrain_path}")
-    checkpoint = torch.load(pretrain_path, map_location=device)
+    checkpoint = torch.load(pretrain_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 else:
     print("No pre-trained checkpoint provided, training from scratch.")
