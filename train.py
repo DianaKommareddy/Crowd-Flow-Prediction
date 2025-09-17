@@ -83,7 +83,7 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pi
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
 
-model = RestormerCrowdFlow().to(device)
+model = RestormerCrowdFlow(dim=256).to(device)
 
 
 # Load pre-trained weights if available for fine-tuning
