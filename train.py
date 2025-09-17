@@ -54,13 +54,13 @@ def total_variation_loss(img):
 
 # Use transforms with resize to 128x128
 train_per_image_transform = transforms.Compose([
-    transforms.Resize((128, 128)),  # Resized from 64x64 to 128x128
+    transforms.Resize((128, 128)),  # Resize from original size to 128x128
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
 val_per_image_transform = transforms.Compose([
-    transforms.Resize((128, 128)),  # Same for validation
+    transforms.Resize((128, 128)),  # Same resize for validation
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
@@ -68,7 +68,7 @@ val_per_image_transform = transforms.Compose([
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# Dataset initialization with corrected transform
+# Dataset initialization with transforms
 dataset = CustomDataset(
     root_dir='dataset',
     transform=train_per_image_transform
@@ -79,7 +79,6 @@ val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-# Apply validation transform to validation dataset
 val_dataset.dataset.transform = val_per_image_transform
 
 batch_size = 4
@@ -91,7 +90,6 @@ model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(device)
 
 print("Training from scratch without loading any pre-trained weights.")
 
-# Unfreeze all layers
 for param in model.parameters():
     param.requires_grad = True
 
@@ -103,11 +101,12 @@ mse_loss_fn = nn.MSELoss()
 
 checkpoint_dir = 'checkpoints'
 os.makedirs(checkpoint_dir, exist_ok=True)
-latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
 
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
 start_epoch = 0
 best_val_loss = float('inf')
+epochs = 20  # Define number of epochs here
+latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
 
 for epoch in range(start_epoch, epochs):
     print(f"\nEpoch [{epoch + 1}/{epochs}]")
@@ -126,7 +125,6 @@ for epoch in range(start_epoch, epochs):
         loss = mae + mse + (1 - ssim_val) + 0.001 * tv
         loss.backward()
         optimizer.step()
-
         train_losses.append(loss.item())
         print(f"  [Train] Step {step + 1}/{len(train_loader)} | Loss: {loss.item():.6f}")
 
