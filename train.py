@@ -3,14 +3,12 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
-import torchvision.transforms.functional as TF
-from dataset import CrowdFlowDataset
-from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
+from dataset import CustomDataset
+from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
 import os
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
 import piq  # pip install piq
-import random
 
 
 # EarlyStopping Utility
@@ -57,95 +55,79 @@ def total_variation_loss(img):
     return tv_h + tv_w
 
 
-# Joint Transform for A, E, G, Y together
-class JointTransform:
-    def __init__(self, horizontal_flip=True, vertical_flip=True):
-        self.hflip = horizontal_flip
-        self.vflip = vertical_flip
-
-    def __call__(self, A, E, G, Y):
-        if self.hflip and random.random() > 0.5:
-            A = TF.hflip(A)
-            E = TF.hflip(E)
-            G = TF.hflip(G)
-            Y = TF.hflip(Y)
-        if self.vflip and random.random() > 0.5:
-            A = TF.vflip(A)
-            E = TF.vflip(E)
-            G = TF.vflip(G)
-            Y = TF.vflip(Y)
-        return A, E, G, Y
-
-
-# Per image transforms (e.g. ToTensor)
+# Transforms without augmentation
 train_per_image_transform = transforms.ToTensor()
 val_per_image_transform = transforms.ToTensor()
 
-# Device Setup
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# Data preparation
-joint_transform = JointTransform(horizontal_flip=True, vertical_flip=True)
 
-dataset = CrowdFlowDataset(
+# Dataset initialization without augmentation
+dataset = CustomDataset(
     root_dir='dataset',
-    joint_transform=joint_transform,
     transform=train_per_image_transform
 )
+
 
 val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-
-# Disable augmentation for validation
-val_dataset.dataset.joint_transform = None
 val_dataset.dataset.transform = val_per_image_transform
+
 
 batch_size = 4
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
-# Model
+
 model = RestormerCrowdFlow().to(device)
 
+
+# Load pre-trained weights if available for fine-tuning
 pretrain_path = 'checkpoints/restormer_best.pth'
 if os.path.exists(pretrain_path):
     print(f"Loading pre-trained weights for fine-tuning from {pretrain_path}")
-    checkpoint = torch.load(pretrain_path, map_location=device, weights_only=False)
+    checkpoint = torch.load(pretrain_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 else:
     print("No pre-trained checkpoint provided, training from scratch.")
 
-# UNFREEZE ALL LAYERS
+
+# Unfreeze all layers for fine-tuning
 for param in model.parameters():
     param.requires_grad = True
+
 
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
 
+
 mae_loss_fn = nn.L1Loss()
 mse_loss_fn = nn.MSELoss()
 
-# Checkpoint setup
+
 checkpoint_dir = 'checkpoints'
 os.makedirs(checkpoint_dir, exist_ok=True)
 start_epoch = 0
 best_val_loss = float('inf')
 
+
 latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
 if os.path.exists(latest_path):
-    checkpoint = torch.load(latest_path, map_location=device, weights_only=False)
+    checkpoint = torch.load(latest_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint['epoch']
     best_val_loss = checkpoint['val_loss']
     print(f"Resumed from checkpoint at epoch {start_epoch} with val loss {best_val_loss:.6f}")
 
+
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
 
-# Training Loop
+
 epochs = 200
 for epoch in range(start_epoch, epochs):
     print(f"\nEpoch [{epoch + 1}/{epochs}]")
@@ -179,14 +161,11 @@ for epoch in range(start_epoch, epochs):
         for inputs, targets in val_loader:
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
-            mae_val = mae_loss_fn(outputs, targets)
-            ssim_score = piq.ssim(outputs, targets, data_range=1.0)
-            val_mae.append(mae_val.item())
-            val_ssim.append(ssim_score.item())
+            val_mae.append(mae_loss_fn(outputs, targets).item())
+            val_ssim.append(piq.ssim(outputs, targets, data_range=1.0).item())
 
     avg_val_mae = np.mean(val_mae)
     avg_val_ssim = np.mean(val_ssim)
-
     print(f"Val MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f}")
 
     torch.save({
@@ -210,7 +189,6 @@ for epoch in range(start_epoch, epochs):
         }, best_model_path)
         print(f"New best model saved: {best_model_path}")
 
-    # ✅ fixed indentation here
     early_stopper(avg_val_mae, model, epoch + 1, optimizer)
     if early_stopper.early_stop:
         print("Early stopping triggered. Training halted.")
