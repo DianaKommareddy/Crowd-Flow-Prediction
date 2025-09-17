@@ -67,6 +67,7 @@ val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+
 val_dataset.dataset.transform = val_per_image_transform
 
 batch_size = 4
@@ -91,12 +92,13 @@ mse_loss_fn = nn.MSELoss()
 
 checkpoint_dir = 'checkpoints'
 os.makedirs(checkpoint_dir, exist_ok=True)
+
 start_epoch = 0
 best_val_loss = float('inf')
-
 latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
 
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
+
 epochs = 20
 
 for epoch in range(start_epoch, epochs):
@@ -105,11 +107,10 @@ for epoch in range(start_epoch, epochs):
     train_losses = []
 
     for step, (inputs, targets) in enumerate(train_loader):
-        print(f"Inputs tensor size: {inputs.shape}")
+        print(f"Inputs tensor size: {inputs.shape}")  # Print input tensor size here
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
-
         mae = mae_loss_fn(outputs, targets)
         mse = mse_loss_fn(outputs, targets)
         ssim_val = piq.ssim(outputs, targets, data_range=1.0)
@@ -118,6 +119,7 @@ for epoch in range(start_epoch, epochs):
         loss = mae + mse + (1 - ssim_val) + 0.001 * tv
         loss.backward()
         optimizer.step()
+
         train_losses.append(loss.item())
         print(f"  [Train] Step {step + 1}/{len(train_loader)} | Loss: {loss.item():.6f}")
 
