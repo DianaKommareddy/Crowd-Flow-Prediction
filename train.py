@@ -88,7 +88,7 @@ os.makedirs(checkpoint_dir, exist_ok=True)
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
 start_epoch = 0
 best_val_loss = float('inf')
-epochs = 20  # Define number of epochs here
+epochs = 50  # Define number of epochs here
 latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
 for epoch in range(start_epoch, epochs):
     print(f"\nEpoch [{epoch + 1}/{epochs}]")
