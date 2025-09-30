@@ -95,7 +95,6 @@ for epoch in range(start_epoch, epochs):
     model.train()
     train_losses = []
     for step, (inputs, targets) in enumerate(train_loader):
-        print(f"Inputs tensor size: {inputs.shape}")  # Confirm input size
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
