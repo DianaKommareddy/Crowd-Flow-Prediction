@@ -67,7 +67,7 @@ print(f"Using device: {device}")
 
 # Dataset
 dataset = CustomDataset(
-    root_dir='dataset',
+    root_dir='Train_Dataset',
     transform=train_per_image_transform
 )
 
