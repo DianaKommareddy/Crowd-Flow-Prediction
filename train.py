@@ -182,4 +182,12 @@ for epoch in range(start_epoch, epochs):
     # ---------------------- Early Stopping ----------------------
     early_stopper(avg_val_mae, model, epoch + 1, optimizer)
     if early_stopper.early_stop:
-        print("Early s
+        print("Early stopping triggered. Training halted.")
+        break
+
+    # ---------------------- Scheduler ----------------------
+    scheduler.step()
+    current_lr = scheduler.get_last_lr()[0]
+    print(f"Learning Rate: {current_lr:.6f}")
+
+print("\nTraining complete!")
