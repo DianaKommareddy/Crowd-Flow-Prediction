@@ -1,56 +1,70 @@
 import torch
-import numpy as np
-from torch.utils.data import DataLoader
 from torchvision import transforms
+from torch.utils.data import DataLoader
 from dataset import CustomDataset
 from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
-import piq
-import torch.nn as nn
-import pickle
-from torch.serialization import _open_file_like, _legacy_load
+import os
+from PIL import Image
 
-def legacy_torch_load(filename, map_location=None):
-    with _open_file_like(filename, "rb") as f:
-        return _legacy_load(f, map_location, pickle)
+# ------------------------
+# Config
+# ------------------------
+checkpoint_path = "checkpoints/best_model_epoch_20_val_0.0180.pth"  # update if needed
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# ------------------------
+# Load model
+# ------------------------
+model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(device)
+checkpoint = torch.load(checkpoint_path, map_location=device)
+model.load_state_dict(checkpoint["model_state_dict"])
+model.eval()
+print(f"Loaded checkpoint from epoch {checkpoint['epoch']} with val_loss={checkpoint['val_loss']:.6f}")
 
-# Image transforms (resize to 128x128, match training)
+# ------------------------
+# Dataset & Loader
+# ------------------------
 test_transform = transforms.Compose([
     transforms.Resize((128, 128)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
-# Device setup
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# NOTE: CustomDataset should also return original image size for resizing predictions
+test_dataset = CustomDataset(root_dir="Test Dataset", transform=test_transform)
+test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-# Dataset and DataLoader
-test_dataset = CustomDataset(root_dir='dataset', transform=test_transform)
-test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, pin_memory=True)
+# ------------------------
+# Helper functions
+# ------------------------
+def denormalize_output(tensor):
+    """Convert [0,1] torch tensor to uint8 grayscale"""
+    tensor = tensor.squeeze().cpu().clamp(0, 1)  # shape [H,W]
+    return (tensor.numpy() * 255).astype("uint8")
 
-# Instantiate model
-model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(device)
+# Results folder
+save_dir = "results"
+os.makedirs(save_dir, exist_ok=True)
 
-# Load checkpoint with legacy loader workaround
-checkpoint_path = 'checkpoints/best_model_epoch_20_val_0.0180.pth'
-checkpoint = legacy_torch_load(checkpoint_path, map_location=device)
-model.load_state_dict(checkpoint['model_state_dict'])
-model.eval()
-
-# Define loss function
-mae_loss_fn = nn.L1Loss()
-
-# Testing loop
-test_mae = []
-test_ssim = []
-
+# ------------------------
+# Inference & Saving
+# ------------------------
 with torch.no_grad():
-    for inputs, targets in test_loader:
-        inputs, targets = inputs.to(device), targets.to(device)
-        outputs = model(inputs)
-        outputs = torch.clamp(outputs, 0, 1)
-        test_mae.append(mae_loss_fn(outputs, targets).item())
-        test_ssim.append(piq.ssim(outputs, targets, data_range=1.0).item())
+    for idx, (inputs, target) in enumerate(test_loader):
+        inputs, target = inputs.to(device), target.to(device)
 
-print(f"Test MAE: {np.mean(test_mae):.6f}")
-print(f"Test SSIM: {np.mean(test_ssim):.4f}")
+        # Forward pass
+        output = model(inputs)
+        output = torch.clamp(output, 0, 1)
+
+        # Convert to image
+        pred_img = denormalize_output(output)
+
+        # Resize prediction back to GT size
+        gt_size = target.squeeze().cpu().numpy().shape  # (H, W)
+        pred_pil = Image.fromarray(pred_img).resize(gt_size[::-1], Image.BILINEAR)
+
+        # Save prediction
+        save_path = os.path.join(save_dir, f"pred_{idx:04d}.png")
+        pred_pil.save(save_path)
+        print(f"Saved: {save_path}")
