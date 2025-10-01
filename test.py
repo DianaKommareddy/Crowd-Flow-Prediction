@@ -1,80 +1,53 @@
 import torch
 from torch.utils.data import DataLoader
+from torchvision import transforms
 from dataset import CustomDataset
 from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
-import os
-import cv2
+import piq
 import numpy as np
-from skimage.metrics import structural_similarity as ssim
 
-# ───────────────────────────────────────
-# Device Setup
-# ───────────────────────────────────────
+# Use transforms with resize to 128x128 for the test dataset (same as val)
+test_transform = transforms.Compose([
+    transforms.Resize((128, 128)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+])
+
+# Device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# ───────────────────────────────────────
-# Load Test Dataset
-# ───────────────────────────────────────
-test_dataset = CustomDataset(root_dir='Test Dataset')
-test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+# Load test dataset
+test_dataset = CustomDataset(root_dir='dataset', transform=test_transform)
+test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
-# ───────────────────────────────────────
-# Load Model and Checkpoint
-# ───────────────────────────────────────
-model = RestormerCrowdFlow().to(device)
-checkpoint = torch.load('checkpoints/Bioinspired_best.pth', map_location=device, weights_only=False)
+# Instantiate model
+model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(device)
+
+# Load checkpoint for testing
+checkpoint_path = 'checkpoints/best_model_epoch_20_val_0.0180.pth'  # Update as needed
+checkpoint = torch.load(checkpoint_path, map_location=device)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
+print(f"Loaded model from {checkpoint_path}")
 
-# ───────────────────────────────────────
-# Create Output Directory
-# ───────────────────────────────────────
-pred_dir = "predictions"
-os.makedirs(pred_dir, exist_ok=True)
+# Define loss functions
+mae_loss_fn = torch.nn.L1Loss()
 
-# ───────────────────────────────────────
-# Inference, Save Predictions, and Calculate Metrics
-# ───────────────────────────────────────
-mse_list = []
-ssim_list = []
-mae_list = []
+# Testing loop
+test_mae = []
+test_ssim = []
 
-print("\nRunning inference and saving predictions...")
 with torch.no_grad():
-    for idx, (inputs, targets) in enumerate(test_loader):
-        inputs = inputs.to(device)
+    for inputs, targets in test_loader:
+        inputs, targets = inputs.to(device), targets.to(device)
         outputs = model(inputs)
+        outputs = torch.clamp(outputs, 0, 1)  # Clamp outputs for valid range
+        test_mae.append(mae_loss_fn(outputs, targets).item())
+        test_ssim.append(piq.ssim(outputs, targets, data_range=1.0).item())
 
-        # Convert prediction and GT to numpy
-        pred = outputs.squeeze().cpu().numpy()
-        gt = targets.squeeze().cpu().numpy()
+avg_test_mae = np.mean(test_mae)
+avg_test_ssim = np.mean(test_ssim)
 
-        # Clip values to [0,1]
-        pred = np.clip(pred, 0, 1)
-        gt = np.clip(gt, 0, 1)
-
-        # Resize to 112×112 with sharp edges
-        pred_resized = cv2.resize(pred, (112, 112), interpolation=cv2.INTER_NEAREST)
-        gt_resized = cv2.resize(gt, (112, 112), interpolation=cv2.INTER_NEAREST)
-
-        # Save prediction image
-        save_path = os.path.join(pred_dir, f"pred_{idx}.png")
-        cv2.imwrite(save_path, (pred_resized * 255).astype(np.uint8))
-        print(f"Saved: {save_path}")
-
-        # Metrics
-        mse = np.mean((pred_resized - gt_resized) ** 2)
-        mae = np.mean(np.abs(pred_resized - gt_resized))
-        ssim_val = ssim(pred_resized, gt_resized, data_range=1.0)
-
-        mse_list.append(mse)
-        mae_list.append(mae)
-        ssim_list.append(ssim_val)
-
-#------------------------------------------------------
-# Print final metrics
-#------------------------------------------------------
-print(f"\nAverage MSE: {np.mean(mse_list):.6f}")
-print(f"Average MAE: {np.mean(mae_list):.6f}")
-print(f"Average SSIM: {np.mean(ssim_list):.4f}")
+print(f"Test MAE: {avg_test_mae:.6f}")
+print(f"Test SSIM: {avg_test_ssim:.4f}")
