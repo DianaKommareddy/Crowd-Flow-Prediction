@@ -6,11 +6,13 @@ from dataset import CustomDataset
 from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
 import piq
 import torch.nn as nn
+import pickle
 from torch.serialization import _open_file_like, _legacy_load
 
 def legacy_torch_load(filename, map_location=None):
     with _open_file_like(filename, "rb") as f:
-        return _legacy_load(f, map_location=map_location)
+        return _legacy_load(f, map_location, pickle)
+
 
 # Image transforms (resize to 128x128, match training)
 test_transform = transforms.Compose([
