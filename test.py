@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from dataset import CrowdFlowDataset
-from models.restormer_crowd_flow import SharpRestormer as RestormerCrowdFlow
+from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
 import os
 import cv2
 import numpy as np
