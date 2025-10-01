@@ -26,7 +26,7 @@ model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(device)
 
 # Load checkpoint for testing
 checkpoint_path = 'checkpoints/best_model_epoch_20_val_0.0180.pth'  # Update as needed
-checkpoint = torch.load(checkpoint_path, map_location=device)
+checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 print(f"Loaded model from {checkpoint_path}")
