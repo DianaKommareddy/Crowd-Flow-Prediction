@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data import DataLoader
-from dataset import CrowdFlowDataset
+from dataset import CustomDataset
 from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
 import os
 import cv2
@@ -16,7 +16,7 @@ print(f"Using device: {device}")
 # ───────────────────────────────────────
 # Load Test Dataset
 # ───────────────────────────────────────
-test_dataset = CrowdFlowDataset(root_dir='Test Dataset')
+test_dataset = CustomDataset(root_dir='Test Dataset')
 test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # ───────────────────────────────────────
