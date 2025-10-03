@@ -12,3 +12,4 @@ matplotlib
 Pillow
 tqdm
 pytorch-ssim
+piq
