@@ -53,11 +53,11 @@ def total_variation_loss(img):
     return tv_h + tv_w
 
 # ---------------------- Transforms ----------------------
-FIXED_SIZE = 224
+FIXED_SIZE = 128  # Reduce input size for memory efficiency
 
 train_per_image_transform = transforms.Compose([
-    transforms.Resize(FIXED_SIZE),        # Resize shorter side to FIXED_SIZE
-    transforms.CenterCrop(FIXED_SIZE),    # Crop to FIXED_SIZE x FIXED_SIZE
+    transforms.Resize(FIXED_SIZE),
+    transforms.CenterCrop(FIXED_SIZE),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
@@ -85,7 +85,7 @@ train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 val_dataset.dataset.transform = val_per_image_transform
 
 # DataLoaders
-batch_size = 4
+batch_size = 1  # Reduce batch size for memory efficiency
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
@@ -111,6 +111,9 @@ best_val_loss = float('inf')
 epochs = 20
 latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
 
+# ---------------------- Mixed Precision Scaler ----------------------
+scaler = torch.cuda.amp.GradScaler()
+
 # ---------------------- Training Loop ----------------------
 for epoch in range(start_epoch, epochs):
     print(f"\nEpoch [{epoch + 1}/{epochs}]")
@@ -119,19 +122,21 @@ for epoch in range(start_epoch, epochs):
 
     for step, (inputs, targets) in enumerate(train_loader):
         inputs, targets = inputs.to(device), targets.to(device)
-
         optimizer.zero_grad(set_to_none=True)
-        outputs = model(inputs)
-        outputs = torch.clamp(outputs, 0, 1)  # Clamp to valid range
 
-        mae = mae_loss_fn(outputs, targets)
-        mse = mse_loss_fn(outputs, targets)
-        ssim_val = piq.ssim(outputs, targets, data_range=1.0)
-        tv = total_variation_loss(outputs)
-        loss = mae + mse + (1 - ssim_val) + 0.001 * tv
+        # Mixed precision forward
+        with torch.cuda.amp.autocast():
+            outputs = model(inputs)
+            outputs = torch.clamp(outputs, 0, 1)
+            mae = mae_loss_fn(outputs, targets)
+            mse = mse_loss_fn(outputs, targets)
+            ssim_val = piq.ssim(outputs, targets, data_range=1.0)
+            tv = total_variation_loss(outputs)
+            loss = mae + mse + (1 - ssim_val) + 0.001 * tv
 
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         train_losses.append(loss.item())
         print(f"  [Train] Step {step + 1}/{len(train_loader)} | Loss: {loss.item():.6f}")
@@ -147,11 +152,11 @@ for epoch in range(start_epoch, epochs):
     with torch.no_grad():
         for inputs, targets in val_loader:
             inputs, targets = inputs.to(device), targets.to(device)
-            outputs = model(inputs)
-            outputs = torch.clamp(outputs, 0, 1)
-
-            val_mae.append(mae_loss_fn(outputs, targets).item())
-            val_ssim.append(piq.ssim(outputs, targets, data_range=1.0).item())
+            with torch.cuda.amp.autocast():
+                outputs = model(inputs)
+                outputs = torch.clamp(outputs, 0, 1)
+                val_mae.append(mae_loss_fn(outputs, targets).item())
+                val_ssim.append(piq.ssim(outputs, targets, data_range=1.0).item())
 
     avg_val_mae = np.mean(val_mae)
     avg_val_ssim = np.mean(val_ssim)
@@ -189,5 +194,8 @@ for epoch in range(start_epoch, epochs):
     scheduler.step()
     current_lr = scheduler.get_last_lr()[0]
     print(f"Learning Rate: {current_lr:.6f}")
+
+    # ---------------------- Clear Cache ----------------------
+    torch.cuda.empty_cache()
 
 print("\nTraining complete!")
