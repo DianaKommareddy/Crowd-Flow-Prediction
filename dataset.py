@@ -1,16 +1,16 @@
 import os
 from PIL import Image
+import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
-import torch
 
 class CustomDataset(Dataset):
-    def __init__(self, root_dir, transform=None, target_size=224):
+    def __init__(self, root_dir, transform=None, target_size=128):
         """
         Args:
             root_dir (str): Root directory containing folders 'A', 'E', 'G', 'Y'
             transform (torchvision.transforms, optional): Transform for input images
-            target_size (int): Size to resize both inputs and target to (square)
+            target_size (int): Size to resize both inputs and target (square)
         """
         self.root_dir = root_dir
         self.A_dir = os.path.join(root_dir, "A")
@@ -23,7 +23,7 @@ class CustomDataset(Dataset):
         # Input transform
         if transform is None:
             self.transform = transforms.Compose([
-                transforms.Resize((self.target_size, self.target_size)),  # Resize to fixed size
+                transforms.Resize((self.target_size, self.target_size)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
             ])
@@ -32,7 +32,7 @@ class CustomDataset(Dataset):
 
         # Target transform (grayscale)
         self.target_transform = transforms.Compose([
-            transforms.Resize((self.target_size, self.target_size)),  # Resize to match input
+            transforms.Resize((self.target_size, self.target_size)),
             transforms.ToTensor()
         ])
 
