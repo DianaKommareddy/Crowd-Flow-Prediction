@@ -4,11 +4,12 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from dataset import CustomDataset
-from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
+from restormer_crowd_flow import HINT  # <-- updated model
 import os
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
-import piq  # pip install piq
+import piq
+import torch.nn.functional as F
 
 # ---------------------- EarlyStopping Utility ----------------------
 class EarlyStopping:
@@ -52,22 +53,33 @@ def total_variation_loss(img):
     tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
     return tv_h + tv_w
 
-# ---------------------- Transforms ----------------------
-FIXED_SIZE = 128  # Reduce input size for memory efficiency
+# ---------------------- Structure Map (Sobel) ----------------------
+def compute_structure_map(x):
+    if x.shape[1] > 1:
+        x_gray = x.mean(dim=1, keepdim=True)
+    else:
+        x_gray = x
+    sobel_x = torch.tensor([[1,0,-1],[2,0,-2],[1,0,-1]], dtype=torch.float32, device=x.device).view(1,1,3,3)
+    sobel_y = torch.tensor([[1,2,1],[0,0,0],[-1,-2,-1]], dtype=torch.float32, device=x.device).view(1,1,3,3)
+    grad_x = F.conv2d(x_gray, sobel_x, padding=1)
+    grad_y = F.conv2d(x_gray, sobel_y, padding=1)
+    edge_mag = torch.sqrt(grad_x**2 + grad_y**2)
+    return edge_mag
 
-train_per_image_transform = transforms.Compose([
+# ---------------------- Transforms ----------------------
+FIXED_SIZE = 128
+train_transform = transforms.Compose([
     transforms.Resize(FIXED_SIZE),
     transforms.CenterCrop(FIXED_SIZE),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
 ])
-
-val_per_image_transform = transforms.Compose([
+val_transform = transforms.Compose([
     transforms.Resize(FIXED_SIZE),
     transforms.CenterCrop(FIXED_SIZE),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
 ])
 
 # ---------------------- Device ----------------------
@@ -75,30 +87,25 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 # ---------------------- Dataset ----------------------
-dataset = CustomDataset(root_dir='Train_Dataset', transform=train_per_image_transform)
-
-# Split into train/val
+dataset = CustomDataset(root_dir='Train_Dataset', transform=train_transform)
 val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-val_dataset.dataset.transform = val_per_image_transform
+val_dataset.dataset.transform = val_transform
 
-# DataLoaders
-batch_size = 1  # Reduce batch size for memory efficiency
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
 # ---------------------- Model ----------------------
-model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(device)
-print("Training from scratch without loading pre-trained weights.")
+model = HINT(dim=32, inp_channels=9, out_channels=1).to(device)
+print("Training HINT with MCRPB from scratch.")
 
 for param in model.parameters():
     param.requires_grad = True
 
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
-
 mae_loss_fn = nn.L1Loss()
 mse_loss_fn = nn.MSELoss()
 
@@ -106,16 +113,15 @@ mse_loss_fn = nn.MSELoss()
 checkpoint_dir = 'checkpoints'
 os.makedirs(checkpoint_dir, exist_ok=True)
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
-start_epoch = 0
-best_val_loss = float('inf')
 epochs = 20
 latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
+best_val_loss = float('inf')
 
 # ---------------------- Mixed Precision Scaler ----------------------
 scaler = torch.cuda.amp.GradScaler()
 
 # ---------------------- Training Loop ----------------------
-for epoch in range(start_epoch, epochs):
+for epoch in range(epochs):
     print(f"\nEpoch [{epoch + 1}/{epochs}]")
     model.train()
     train_losses = []
@@ -124,9 +130,10 @@ for epoch in range(start_epoch, epochs):
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad(set_to_none=True)
 
-        # Mixed precision forward
+        structure_map = compute_structure_map(inputs)
+
         with torch.cuda.amp.autocast():
-            outputs = model(inputs)
+            outputs = model(inputs, modality_pair=None, structure_map=structure_map)
             outputs = torch.clamp(outputs, 0, 1)
             mae = mae_loss_fn(outputs, targets)
             mse = mse_loss_fn(outputs, targets)
@@ -152,8 +159,9 @@ for epoch in range(start_epoch, epochs):
     with torch.no_grad():
         for inputs, targets in val_loader:
             inputs, targets = inputs.to(device), targets.to(device)
+            structure_map = compute_structure_map(inputs)
             with torch.cuda.amp.autocast():
-                outputs = model(inputs)
+                outputs = model(inputs, modality_pair=None, structure_map=structure_map)
                 outputs = torch.clamp(outputs, 0, 1)
                 val_mae.append(mae_loss_fn(outputs, targets).item())
                 val_ssim.append(piq.ssim(outputs, targets, data_range=1.0).item())
@@ -172,10 +180,7 @@ for epoch in range(start_epoch, epochs):
 
     if avg_val_mae < best_val_loss:
         best_val_loss = avg_val_mae
-        best_model_path = os.path.join(
-            checkpoint_dir,
-            f"best_model_epoch_{epoch + 1:02d}_val_{avg_val_mae:.4f}.pth"
-        )
+        best_model_path = os.path.join(checkpoint_dir, f"best_model_epoch_{epoch+1:02d}_val_{avg_val_mae:.4f}.pth")
         torch.save({
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
@@ -195,7 +200,6 @@ for epoch in range(start_epoch, epochs):
     current_lr = scheduler.get_last_lr()[0]
     print(f"Learning Rate: {current_lr:.6f}")
 
-    # ---------------------- Clear Cache ----------------------
     torch.cuda.empty_cache()
 
 print("\nTraining complete!")
