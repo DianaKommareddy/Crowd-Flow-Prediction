@@ -4,7 +4,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from dataset import CustomDataset
-from restormer_crowd_flow import HINT  # <-- updated model
+from models.restormer_crowd_flow import HINT   # <-- updated model
 import os
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
