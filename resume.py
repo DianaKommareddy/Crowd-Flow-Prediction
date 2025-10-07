@@ -8,7 +8,7 @@ from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
 import os
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
-import piq  # pip install piq
+import piq # pip install piq
 
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0.0, path='checkpoints/best_model_earlystop.pth', verbose=True):
@@ -69,7 +69,7 @@ dataset = CustomDataset(
 )
 
 val_ratio = 0.1
-val_size = int(len(dataset)*val_ratio)
+val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 val_dataset.dataset.transform = val_per_image_transform
@@ -112,7 +112,7 @@ if os.path.isfile(latest_path):
 else:
     print("No checkpoint found. Starting new training.")
 
-epochs = 50
+epochs = 35  # Only train up to 35 epochs
 
 for epoch in range(start_epoch, epochs):
     print(f"\nEpoch [{epoch+1}/{epochs}]")
@@ -157,7 +157,7 @@ for epoch in range(start_epoch, epochs):
         'val_loss': avg_val_mae
     }, latest_path)
 
-    # Save only the best checkpoint deleting the previous best
+    # Save only the best checkpoint, deleting the previous best
     if avg_val_mae < best_val_loss:
         best_val_loss = avg_val_mae
         if best_model_filepath is not None and os.path.exists(best_model_filepath):
