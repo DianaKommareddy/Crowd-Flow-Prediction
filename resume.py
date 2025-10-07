@@ -1,146 +1,107 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
-from dataset import CustomDataset
-from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
-import os
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
-import piq # pip install piq
+import piq
 
-class EarlyStopping:
-    def __init__(self, patience=7, min_delta=0.0, path='checkpoints/best_model_earlystop.pth', verbose=True):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-        self.path = path
-        self.verbose = verbose
-    def __call__(self, val_loss, model, epoch, optimizer):
-        if self.best_score is None:
-            self.best_score = val_loss
-            self.save_checkpoint(val_loss, model, epoch, optimizer)
-        elif val_loss < self.best_score - self.min_delta:
-            self.best_score = val_loss
-            self.counter = 0
-            self.save_checkpoint(val_loss, model, epoch, optimizer)
-        else:
-            self.counter += 1
-            if self.verbose:
-                print(f"EarlyStopping counter: {self.counter} / {self.patience}")
-            if self.counter >= self.patience:
-                self.early_stop = True
-    def save_checkpoint(self, val_loss, model, epoch, optimizer):
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'val_loss': val_loss
-        }, self.path)
-        if self.verbose:
-            print(f"EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
+from dataset import CustomDataset
+from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
 
-def total_variation_loss(img):
-    tv_h = torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]))
-    tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
-    return tv_h + tv_w
+# ----------------------------
+# Config
+# ----------------------------
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+CHECKPOINT_PATH = "checkpoints/restormer_latest.pth"  # latest checkpoint (edit if using a different file)
+OUTPUT_ROOT = "outputs"
+BATCH_SIZE = 4
+MAX_EPOCHS = 35
 
-train_per_image_transform = transforms.Compose([
+os.makedirs("checkpoints", exist_ok=True)
+os.makedirs(OUTPUT_ROOT, exist_ok=True)
+
+# ----------------------------
+# Data transforms and setup
+# ----------------------------
+train_transform = transforms.Compose([
     transforms.Resize((128, 128)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5])
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
 ])
-
-val_per_image_transform = transforms.Compose([
+val_transform = transforms.Compose([
     transforms.Resize((128, 128)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5])
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
 ])
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
-
-dataset = CustomDataset(
-    root_dir='Train_Dataset',
-    transform=train_per_image_transform
-)
-
+dataset = CustomDataset(root_dir='Train_Dataset', transform=train_transform)
 val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-val_dataset.dataset.transform = val_per_image_transform
+val_dataset.dataset.transform = val_transform
 
-batch_size = 4
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
-model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(device)
-print("Training from scratch without loading any pre-trained weights.")
-for param in model.parameters():
-    param.requires_grad = True
-
+# ----------------------------
+# Model and optimizer
+# ----------------------------
+model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(DEVICE)
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
-
 mae_loss_fn = nn.L1Loss()
 mse_loss_fn = nn.MSELoss()
 
-checkpoint_dir = 'checkpoints'
-os.makedirs(checkpoint_dir, exist_ok=True)
-latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
-
-early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
-
+# ----------------------------
+# RESUME LOGIC
+# ----------------------------
 start_epoch = 0
 best_val_loss = float('inf')
 best_model_filepath = None
 
-# Resume from latest checkpoint if exists
-if os.path.isfile(latest_path):
-    print(f"Resuming training from checkpoint: {latest_path}")
-    checkpoint = torch.load(latest_path, map_location=device)
+if os.path.isfile(CHECKPOINT_PATH):
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint['epoch']
     best_val_loss = checkpoint['val_loss']
     scheduler.last_epoch = start_epoch - 1
-    print(f"Checkpoint loaded. (Epoch: {start_epoch}, Val Loss: {best_val_loss:.6f})")
+    print(f"Resumed from checkpoint: {CHECKPOINT_PATH} (epoch {start_epoch}, val_loss={best_val_loss:.6f})")
 else:
-    print("No checkpoint found. Starting new training.")
+    print("No checkpoint found. Starting from scratch.")
 
-epochs = 35  # Only train up to 35 epochs
-
-for epoch in range(start_epoch, epochs):
-    print(f"\nEpoch [{epoch+1}/{epochs}]")
+# ----------------------------
+# TRAIN LOOP (up to MAX_EPOCHS)
+# ----------------------------
+for epoch in range(start_epoch, MAX_EPOCHS):
+    print(f"\nEpoch [{epoch+1}/{MAX_EPOCHS}]")
     model.train()
     train_losses = []
     for step, (inputs, targets) in enumerate(train_loader):
-        inputs, targets = inputs.to(device), targets.to(device)
+        inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
         optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
         outputs = torch.clamp(outputs, 0, 1)
         mae = mae_loss_fn(outputs, targets)
         mse = mse_loss_fn(outputs, targets)
         ssim_val = piq.ssim(outputs, targets, data_range=1.0)
-        tv = total_variation_loss(outputs)
-        loss = mae + mse + (1 - ssim_val) + 0.001 * tv
+        loss = mae + mse + (1 - ssim_val)
         loss.backward()
         optimizer.step()
         train_losses.append(loss.item())
-        print(f"  [Train] Step {step+1}/{len(train_loader)} | Loss: {loss.item():.6f}")
     avg_train_loss = np.mean(train_losses)
-    print(f"Train Loss — Avg: {avg_train_loss:.6f}")
+    print(f"Train Loss: {avg_train_loss:.6f}")
 
     model.eval()
     val_mae = []
     val_ssim = []
     with torch.no_grad():
         for inputs, targets in val_loader:
-            inputs, targets = inputs.to(device), targets.to(device)
+            inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
             outputs = model(inputs)
             outputs = torch.clamp(outputs, 0, 1)
             val_mae.append(mae_loss_fn(outputs, targets).item())
@@ -149,21 +110,21 @@ for epoch in range(start_epoch, epochs):
     avg_val_ssim = np.mean(val_ssim)
     print(f"Val MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f}")
 
-    # Save latest checkpoint
+    # Save checkpoint
     torch.save({
         'epoch': epoch+1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'val_loss': avg_val_mae
-    }, latest_path)
+    }, CHECKPOINT_PATH)
 
-    # Save only the best checkpoint, deleting the previous best
+    # Save best model
     if avg_val_mae < best_val_loss:
         best_val_loss = avg_val_mae
-        if best_model_filepath is not None and os.path.exists(best_model_filepath):
+        if best_model_filepath and os.path.exists(best_model_filepath):
             os.remove(best_model_filepath)
         best_model_filepath = os.path.join(
-            checkpoint_dir,
+            "checkpoints",
             f"best_model_epoch_{epoch+1:02d}_val_{avg_val_mae:.4f}.pth"
         )
         torch.save({
@@ -173,11 +134,6 @@ for epoch in range(start_epoch, epochs):
             'val_loss': best_val_loss
         }, best_model_filepath)
         print(f"New best model saved: {best_model_filepath}")
-
-    early_stopper(avg_val_mae, model, epoch+1, optimizer)
-    if early_stopper.early_stop:
-        print("Early stopping triggered. Training halted.")
-        break
 
     scheduler.step()
     current_lr = scheduler.get_last_lr()[0]
