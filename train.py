@@ -1,205 +1,102 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
-from torchvision import transforms
-from dataset import CustomDataset
-from models.restormer_crowd_flow import HINT   # <-- updated model
 import os
-import numpy as np
-from torch.optim.lr_scheduler import StepLR
-import piq
+import torch
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from PIL import Image
+import numpy as np
+import piq
 
-# ---------------------- EarlyStopping Utility ----------------------
-class EarlyStopping:
-    def __init__(self, patience=7, min_delta=0.0, path='checkpoints/best_model_earlystop.pth', verbose=True):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-        self.path = path
-        self.verbose = verbose
+from dataset import CustomDataset
+from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
 
-    def __call__(self, val_loss, model, epoch, optimizer):
-        if self.best_score is None:
-            self.best_score = val_loss
-            self.save_checkpoint(val_loss, model, epoch, optimizer)
-        elif val_loss < self.best_score - self.min_delta:
-            self.best_score = val_loss
-            self.counter = 0
-            self.save_checkpoint(val_loss, model, epoch, optimizer)
-        else:
-            self.counter += 1
-            if self.verbose:
-                print(f"EarlyStopping counter: {self.counter} / {self.patience}")
-            if self.counter >= self.patience:
-                self.early_stop = True
+# ----------------------------
+# Config
+# ----------------------------
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+CHECKPOINT_PATH = "checkpoints/best_model_epoch_20_val_0.0136.pth"   # <-- change to your file
+OUTPUT_ROOT = "outputs"
+BATCH_SIZE = 1
+os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
-    def save_checkpoint(self, val_loss, model, epoch, optimizer):
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'val_loss': val_loss
-        }, self.path)
-        if self.verbose:
-            print(f"EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
+# ----------------------------
+# Model
+# ----------------------------
+model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(DEVICE)
+checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
 
-# ---------------------- Total Variation Loss ----------------------
-def total_variation_loss(img):
-    tv_h = torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]))
-    tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
-    return tv_h + tv_w
+# Load checkpoint safely
+model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+print(f"Loaded checkpoint from epoch {checkpoint['epoch']} with val_loss={checkpoint['val_loss']:.6f}")
+model.eval()
 
-# ---------------------- Structure Map (Sobel) ----------------------
-def compute_structure_map(x):
-    if x.shape[1] > 1:
-        x_gray = x.mean(dim=1, keepdim=True)
-    else:
-        x_gray = x
-    sobel_x = torch.tensor([[1,0,-1],[2,0,-2],[1,0,-1]], dtype=torch.float32, device=x.device).view(1,1,3,3)
-    sobel_y = torch.tensor([[1,2,1],[0,0,0],[-1,-2,-1]], dtype=torch.float32, device=x.device).view(1,1,3,3)
-    grad_x = F.conv2d(x_gray, sobel_x, padding=1)
-    grad_y = F.conv2d(x_gray, sobel_y, padding=1)
-    edge_mag = torch.sqrt(grad_x**2 + grad_y**2)
-    return edge_mag
 
-# ---------------------- Transforms ----------------------
-FIXED_SIZE = 128
-train_transform = transforms.Compose([
-    transforms.Resize(FIXED_SIZE),
-    transforms.CenterCrop(FIXED_SIZE),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
-])
-val_transform = transforms.Compose([
-    transforms.Resize(FIXED_SIZE),
-    transforms.CenterCrop(FIXED_SIZE),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
-])
+# ----------------------------
+# Helper function for testing
+# ----------------------------
+def run_test(dataset_root, resize_shape=(128, 128), tag="Testing"):
+    print(f"\n=== Evaluating {tag} ({resize_shape[0]}x{resize_shape[1]}) ===")
 
-# ---------------------- Device ----------------------
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
+    # Define transforms dynamically (same as training resize)
+    test_transform = transforms.Compose([
+        transforms.Resize(resize_shape),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                             std=[0.5, 0.5, 0.5])
+    ])
+    target_transform = transforms.Compose([
+        transforms.Resize(resize_shape),
+        transforms.ToTensor()
+    ])
 
-# ---------------------- Dataset ----------------------
-dataset = CustomDataset(root_dir='Train_Dataset', transform=train_transform)
-val_ratio = 0.1
-val_size = int(len(dataset) * val_ratio)
-train_size = len(dataset) - val_size
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-val_dataset.dataset.transform = val_transform
+    dataset = CustomDataset(root_dir=dataset_root,
+                            transform=test_transform,
+                            target_transform=target_transform)
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, pin_memory=True)
-val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
-
-# ---------------------- Model ----------------------
-model = HINT(dim=32, inp_channels=9, out_channels=1).to(device)
-print("Training HINT with MCRPB from scratch.")
-
-for param in model.parameters():
-    param.requires_grad = True
-
-optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
-scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
-mae_loss_fn = nn.L1Loss()
-mse_loss_fn = nn.MSELoss()
-
-# ---------------------- Checkpoints ----------------------
-checkpoint_dir = 'checkpoints'
-os.makedirs(checkpoint_dir, exist_ok=True)
-early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
-epochs = 20
-latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
-best_val_loss = float('inf')
-
-# ---------------------- Mixed Precision Scaler ----------------------
-scaler = torch.cuda.amp.GradScaler()
-
-# ---------------------- Training Loop ----------------------
-for epoch in range(epochs):
-    print(f"\nEpoch [{epoch + 1}/{epochs}]")
-    model.train()
-    train_losses = []
-
-    for step, (inputs, targets) in enumerate(train_loader):
-        inputs, targets = inputs.to(device), targets.to(device)
-        optimizer.zero_grad(set_to_none=True)
-
-        structure_map = compute_structure_map(inputs)
-
-        with torch.cuda.amp.autocast():
-            outputs = model(inputs, modality_pair=None, structure_map=structure_map)
-            outputs = torch.clamp(outputs, 0, 1)
-            mae = mae_loss_fn(outputs, targets)
-            mse = mse_loss_fn(outputs, targets)
-            ssim_val = piq.ssim(outputs, targets, data_range=1.0)
-            tv = total_variation_loss(outputs)
-            loss = mae + mse + (1 - ssim_val) + 0.001 * tv
-
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-
-        train_losses.append(loss.item())
-        print(f"  [Train] Step {step + 1}/{len(train_loader)} | Loss: {loss.item():.6f}")
-
-    avg_train_loss = np.mean(train_losses)
-    print(f"Train Loss — Avg: {avg_train_loss:.6f}")
-
-    # ---------------------- Validation ----------------------
-    model.eval()
-    val_mae = []
-    val_ssim = []
+    mae_list, ssim_list = [], []
+    output_folder = os.path.join(OUTPUT_ROOT, tag)
+    os.makedirs(output_folder, exist_ok=True)
 
     with torch.no_grad():
-        for inputs, targets in val_loader:
-            inputs, targets = inputs.to(device), targets.to(device)
-            structure_map = compute_structure_map(inputs)
-            with torch.cuda.amp.autocast():
-                outputs = model(inputs, modality_pair=None, structure_map=structure_map)
-                outputs = torch.clamp(outputs, 0, 1)
-                val_mae.append(mae_loss_fn(outputs, targets).item())
-                val_ssim.append(piq.ssim(outputs, targets, data_range=1.0).item())
+        for idx, (inputs, targets) in enumerate(loader):
+            inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
+            outputs = model(inputs)
 
-    avg_val_mae = np.mean(val_mae)
-    avg_val_ssim = np.mean(val_ssim)
-    print(f"Val MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f}")
+            # Align sizes if mismatch
+            if outputs.shape != targets.shape:
+                outputs = F.interpolate(outputs,
+                                        size=targets.shape[-2:],
+                                        mode='bilinear',
+                                        align_corners=False)
 
-    # ---------------------- Save latest and best model ----------------------
-    torch.save({
-        'epoch': epoch + 1,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'val_loss': avg_val_mae
-    }, latest_path)
+            # Rescale [0,1]
+            outputs = torch.clamp(outputs, 0, 1)
+            targets = torch.clamp(targets, 0, 1)
 
-    if avg_val_mae < best_val_loss:
-        best_val_loss = avg_val_mae
-        best_model_path = os.path.join(checkpoint_dir, f"best_model_epoch_{epoch+1:02d}_val_{avg_val_mae:.4f}.pth")
-        torch.save({
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'val_loss': best_val_loss
-        }, best_model_path)
-        print(f"New best model saved: {best_model_path}")
+            # Save output image
+            out_img = outputs[0].cpu().numpy()
+            if out_img.shape[0] == 1:  # grayscale
+                out_img = out_img.squeeze(0) * 255.0
+                Image.fromarray(out_img.astype(np.uint8)).save(
+                    os.path.join(output_folder, f"{idx}.png"))
+            else:  # RGB
+                out_img = out_img.transpose(1, 2, 0) * 255.0
+                Image.fromarray(out_img.astype(np.uint8)).save(
+                    os.path.join(output_folder, f"{idx}.png"))
 
-    # ---------------------- Early Stopping ----------------------
-    early_stopper(avg_val_mae, model, epoch + 1, optimizer)
-    if early_stopper.early_stop:
-        print("Early stopping triggered. Training halted.")
-        break
+            # Metrics
+            mae_list.append(torch.mean(torch.abs(outputs - targets)).item())
+            ssim_list.append(piq.ssim(outputs, targets, data_range=1.0).item())
 
-    # ---------------------- Scheduler ----------------------
-    scheduler.step()
-    current_lr = scheduler.get_last_lr()[0]
-    print(f"Learning Rate: {current_lr:.6f}")
+    print(f"{tag} -> Average MAE: {np.mean(mae_list):.6f}, Average SSIM: {np.mean(ssim_list):.6f}")
 
-    torch.cuda.empty_cache()
 
-print("\nTraining complete!")
+# ----------------------------
+# Run on ONE dataset
+# ----------------------------
+# Example: only test on testing140
+#run_test("testing140", resize_shape=(128, 128), tag="Test140")
+
+# If you want to test the other one, comment above and use:
+run_test("Testing", resize_shape=(128, 128), tag="Test112")
