@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-
 # Optional: for DropPath regularization
 try:
     from timm.models.layers import DropPath
