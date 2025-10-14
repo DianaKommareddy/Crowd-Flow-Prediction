@@ -74,7 +74,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 # ---- Dataset ----
-dataset = CustomDataset(root_dir='Train_Dataset', transform=train_transform)
+dataset = CustomDataset(root_dir='dataset', transform=train_transform)
 val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
 train_size = len(dataset) - val_size
