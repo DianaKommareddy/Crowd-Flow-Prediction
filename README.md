@@ -26,7 +26,7 @@ crowd-flow-prediction-using-restormer/
 </pre>
 
 ## Model Overview
-I have write
+This model uses a hierarchical transformer design to predict crowd flow. It combines global and local context information, allowing better learning of patterns and interactions within complex crowd scenes.
 
 **Inputs:**
 - Agent Map (`A`) — where people are
