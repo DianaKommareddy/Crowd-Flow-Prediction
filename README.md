@@ -1,5 +1,5 @@
-# Crowd Flow Prediction using Restormer
-This project uses a transformer-based model called Restormer to predict how crowds move in busy scenes. It takes in the positions of agents, the layout of the environment—including walkable and non-walkable areas—and the agents’ goals. Based on this information, the model learns to estimate the likely movement patterns and generates a flow map of the crowd.
+# Crowd Flow Prediction
+This project uses a transformer-based model to predict how crowds move in busy scenes. It takes in the positions of agents, the layout of the environment—including walkable and non-walkable areas—and the agents’ goals. Based on this information, the model learns to estimate the likely movement patterns and generates a flow map of the crowd.
 
 ## Project Structure
 <pre lang="md">
@@ -26,8 +26,7 @@ crowd-flow-prediction-using-restormer/
 </pre>
 
 ## Model Overview
-
-We use a modified **Restormer**, originally designed for image restoration, to handle crowd flow prediction. It captures spatial relationships and context using self-attention and feedforward blocks with upsampling and downsampling to handle multiscale reasoning.
+I have write
 
 **Inputs:**
 - Agent Map (`A`) — where people are
