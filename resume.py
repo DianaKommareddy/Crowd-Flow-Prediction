@@ -9,13 +9,14 @@ from torch.optim.lr_scheduler import StepLR
 import piq
 
 from dataset import CustomDataset
-from models.hierarchical_cache_attention_model import HCAM  
+from models.hierarchical_cache_attention_model import HCAM  # absolute import
 
 # ----------------------------
 # Hyperparameters & Paths
 # ----------------------------
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-CHECKPOINT_PATH = "checkpoints/hcam_latest.pth"  
+MODEL_NAME = "hcam"
+CHECKPOINT_DIR = "checkpoints"
 OUTPUT_ROOT = "outputs"
 BATCH_SIZE = 4
 MAX_EPOCHS = 35
@@ -24,8 +25,10 @@ IMG_WIDTH = 128
 IN_CHANNELS = 3    # RGB input
 OUT_CHANNELS = 1   # grayscale flow
 
-os.makedirs("checkpoints", exist_ok=True)
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_ROOT, exist_ok=True)
+
+CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, f"{MODEL_NAME}_latest.pth")
 
 # ----------------------------
 # Data transforms
@@ -86,7 +89,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
     model.train()
     train_losses = []
 
-    for step, (inputs, targets) in enumerate(train_loader):
+    for inputs, targets in train_loader:
         inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
         optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
@@ -110,8 +113,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
     with torch.no_grad():
         for inputs, targets in val_loader:
             inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
-            outputs = model(inputs)
-            outputs = torch.clamp(outputs, 0, 1)
+            outputs = torch.clamp(model(inputs), 0, 1)
             val_mae.append(mae_loss_fn(outputs, targets).item())
             val_ssim.append(piq.ssim(outputs, targets, data_range=1.0).item())
 
@@ -119,7 +121,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
     avg_val_ssim = np.mean(val_ssim)
     print(f"Val MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f}")
 
-    # Save checkpoint
+    # Save latest checkpoint
     torch.save({
         'epoch': epoch+1,
         'model_state_dict': model.state_dict(),
@@ -127,14 +129,14 @@ for epoch in range(start_epoch, MAX_EPOCHS):
         'val_loss': avg_val_mae
     }, CHECKPOINT_PATH)
 
-    # Save best model
+    # Save best model dynamically
     if avg_val_mae < best_val_loss:
         best_val_loss = avg_val_mae
         if best_model_filepath and os.path.exists(best_model_filepath):
             os.remove(best_model_filepath)
         best_model_filepath = os.path.join(
-            "checkpoints",
-            f"best_model_epoch_{epoch+1:02d}_val_{avg_val_mae:.4f}.pth"
+            CHECKPOINT_DIR,
+            f"{MODEL_NAME}_best_epoch{epoch+1:02d}_val{avg_val_mae:.4f}.pth"
         )
         torch.save({
             'epoch': epoch+1,
