@@ -9,32 +9,36 @@ from torch.optim.lr_scheduler import StepLR
 import piq
 
 from dataset import CustomDataset
-from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
+from models.hierarchical_cache_attention_model import HCAM  
 
 # ----------------------------
-# Config
+# Hyperparameters & Paths
 # ----------------------------
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-CHECKPOINT_PATH = "checkpoints/restormer_latest.pth"  # latest checkpoint (edit if using a different file)
+CHECKPOINT_PATH = "checkpoints/hcam_latest.pth"  
 OUTPUT_ROOT = "outputs"
 BATCH_SIZE = 4
 MAX_EPOCHS = 35
+IMG_HEIGHT = 128
+IMG_WIDTH = 128
+IN_CHANNELS = 3    # RGB input
+OUT_CHANNELS = 1   # grayscale flow
 
 os.makedirs("checkpoints", exist_ok=True)
 os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
 # ----------------------------
-# Data transforms and setup
+# Data transforms
 # ----------------------------
 train_transform = transforms.Compose([
-    transforms.Resize((128, 128)),
+    transforms.Resize((IMG_HEIGHT, IMG_WIDTH)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+    transforms.Normalize(mean=[0.5]*IN_CHANNELS, std=[0.5]*IN_CHANNELS),
 ])
 val_transform = transforms.Compose([
-    transforms.Resize((128, 128)),
+    transforms.Resize((IMG_HEIGHT, IMG_WIDTH)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+    transforms.Normalize(mean=[0.5]*IN_CHANNELS, std=[0.5]*IN_CHANNELS),
 ])
 
 dataset = CustomDataset(root_dir='Train_Dataset', transform=train_transform)
@@ -48,16 +52,16 @@ train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, pi
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
 # ----------------------------
-# Model and optimizer
+# Model, optimizer, scheduler, loss
 # ----------------------------
-model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(DEVICE)
+model = HCAM(dim=32, inp_channels=IN_CHANNELS, out_channels=OUT_CHANNELS).to(DEVICE)
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
 mae_loss_fn = nn.L1Loss()
 mse_loss_fn = nn.MSELoss()
 
 # ----------------------------
-# RESUME LOGIC
+# Resume checkpoint
 # ----------------------------
 start_epoch = 0
 best_val_loss = float('inf')
@@ -75,30 +79,34 @@ else:
     print("No checkpoint found. Starting from scratch.")
 
 # ----------------------------
-# TRAIN LOOP (up to MAX_EPOCHS)
+# Training loop
 # ----------------------------
 for epoch in range(start_epoch, MAX_EPOCHS):
     print(f"\nEpoch [{epoch+1}/{MAX_EPOCHS}]")
     model.train()
     train_losses = []
+
     for step, (inputs, targets) in enumerate(train_loader):
         inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
         optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
         outputs = torch.clamp(outputs, 0, 1)
+
         mae = mae_loss_fn(outputs, targets)
         mse = mse_loss_fn(outputs, targets)
         ssim_val = piq.ssim(outputs, targets, data_range=1.0)
         loss = mae + mse + (1 - ssim_val)
+
         loss.backward()
         optimizer.step()
         train_losses.append(loss.item())
+
     avg_train_loss = np.mean(train_losses)
     print(f"Train Loss: {avg_train_loss:.6f}")
 
+    # Validation
     model.eval()
-    val_mae = []
-    val_ssim = []
+    val_mae, val_ssim = [], []
     with torch.no_grad():
         for inputs, targets in val_loader:
             inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
@@ -106,6 +114,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
             outputs = torch.clamp(outputs, 0, 1)
             val_mae.append(mae_loss_fn(outputs, targets).item())
             val_ssim.append(piq.ssim(outputs, targets, data_range=1.0).item())
+
     avg_val_mae = np.mean(val_mae)
     avg_val_ssim = np.mean(val_ssim)
     print(f"Val MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f}")
