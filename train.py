@@ -1,16 +1,18 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from dataset import CustomDataset
-from models.restormer_crowd_flow import HINT as RestormerCrowdFlow
-import os
+from models.hierarchical_cache_attention_model import HCAM  # change to RestormerCrowdFlow if needed
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
 import piq  # pip install piq
 
-# ---- EarlyStopping Utility ----
+# ------------------------
+# EarlyStopping Utility
+# ------------------------
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0.0, path='checkpoints/best_model_earlystop.pth', verbose=True):
         self.patience = patience
@@ -22,17 +24,14 @@ class EarlyStopping:
         self.verbose = verbose
 
     def __call__(self, val_loss, model, epoch, optimizer):
-        if self.best_score is None:
-            self.best_score = val_loss
-            self.save_checkpoint(val_loss, model, epoch, optimizer)
-        elif val_loss < self.best_score - self.min_delta:
+        if self.best_score is None or val_loss < self.best_score - self.min_delta:
             self.best_score = val_loss
             self.counter = 0
             self.save_checkpoint(val_loss, model, epoch, optimizer)
         else:
             self.counter += 1
             if self.verbose:
-                print(f"EarlyStopping counter: {self.counter} / {self.patience}")
+                print(f"EarlyStopping counter: {self.counter}/{self.patience}")
             if self.counter >= self.patience:
                 self.early_stop = True
 
@@ -44,36 +43,45 @@ class EarlyStopping:
             'val_loss': val_loss
         }, self.path)
         if self.verbose:
-            print(f"EarlyStopping: Saved best model (val_loss={val_loss:.6f}) → {self.path}")
+            print(f"EarlyStopping: Saved best model → {self.path} (val_loss={val_loss:.6f})")
 
-# ---- Total Variation Loss ----
+# ------------------------
+# Total Variation Loss
+# ------------------------
 def total_variation_loss(img):
     tv_h = torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]))
     tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
     return tv_h + tv_w
 
-# ---- Transforms ----
+# ------------------------
+# Hyperparameters & Paths
+# ------------------------
 FIXED_SIZE = 128
+BATCH_SIZE = 1
+EPOCHS = 20
+LEARNING_RATE = 2e-5
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+CHECKPOINT_DIR = 'checkpoints'
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+LATEST_PATH = os.path.join(CHECKPOINT_DIR, 'latest_model.pth')
 
+# ------------------------
+# Data Transforms & Loader
+# ------------------------
 train_transform = transforms.Compose([
     transforms.Resize(FIXED_SIZE),
     transforms.CenterCrop(FIXED_SIZE),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5] * 3, std=[0.5] * 3)
+    transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
 ])
-
 val_transform = transforms.Compose([
     transforms.Resize(FIXED_SIZE),
     transforms.CenterCrop(FIXED_SIZE),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5] * 3, std=[0.5] * 3)
+    transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
 ])
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
-
-# ---- Dataset ----
 dataset = CustomDataset(root_dir='dataset', transform=train_transform)
 val_ratio = 0.1
 val_size = int(len(dataset) * val_ratio)
@@ -81,38 +89,40 @@ train_size = len(dataset) - val_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 val_dataset.dataset.transform = val_transform
 
-train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, pin_memory=True)
-val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True)
 
-model = RestormerCrowdFlow(dim=32, inp_channels=9, out_channels=1).to(device)
-print("Training from scratch without loading pre-trained weights.")
-
-for param in model.parameters():
-    param.requires_grad = True
-
-optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
+# ------------------------
+# Model, Optimizer, Scheduler, Loss
+# ------------------------
+model = HCAM(dim=32, inp_channels=3, out_channels=1).to(DEVICE)
+optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=LEARNING_RATE)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
-
 mae_loss_fn = nn.L1Loss()
 mse_loss_fn = nn.MSELoss()
 
-checkpoint_dir = 'checkpoints'
-os.makedirs(checkpoint_dir, exist_ok=True)
+# ------------------------
+# Early Stopping
+# ------------------------
 early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
-start_epoch = 0
-best_val_loss = float('inf')
-epochs = 20
-latest_path = os.path.join(checkpoint_dir, 'restormer_latest.pth')
 
+# ------------------------
+# Mixed Precision
+# ------------------------
 scaler = torch.cuda.amp.GradScaler()
 
-for epoch in range(start_epoch, epochs):
-    print(f"\nEpoch [{epoch + 1}/{epochs}]")
+best_val_loss = float('inf')
+
+# ------------------------
+# Training Loop
+# ------------------------
+for epoch in range(EPOCHS):
+    print(f"\nEpoch [{epoch+1}/{EPOCHS}]")
     model.train()
     train_losses = []
 
     for step, (inputs, targets) in enumerate(train_loader):
-        inputs, targets = inputs.to(device), targets.to(device)
+        inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
         optimizer.zero_grad(set_to_none=True)
 
         with torch.cuda.amp.autocast():
@@ -121,31 +131,25 @@ for epoch in range(start_epoch, epochs):
             mae = mae_loss_fn(outputs, targets)
             mse = mse_loss_fn(outputs, targets)
             ssim_val = piq.ssim(outputs, targets, data_range=1.0)
-            tv = total_variation_loss(outputs)
-            # --- Add explict density loss ---
+            tv_loss = total_variation_loss(outputs)
             density_loss = torch.abs(torch.sum(outputs) - torch.sum(targets)) / targets.numel()
-            loss = mae + mse + (1 - ssim_val) + 0.001 * tv + 0.05 * density_loss
+            loss = mae + mse + (1 - ssim_val) + 0.001*tv_loss + 0.05*density_loss
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
-
         train_losses.append(loss.item())
-        print(f"  [Train] Step {step + 1}/{len(train_loader)} | Loss: {loss.item():.6f} | Density GT: {torch.sum(targets).item():.2f}, Pred: {torch.sum(outputs).item():.2f}")
 
     avg_train_loss = np.mean(train_losses)
-    print(f"Train Loss — Avg: {avg_train_loss:.6f}")
+    print(f"Avg Train Loss: {avg_train_loss:.6f}")
 
     # ---- Validation ----
     model.eval()
-    val_mae = []
-    val_ssim = []
-    val_density_gt = []
-    val_density_pred = []
+    val_mae, val_ssim, val_density_gt, val_density_pred = [], [], [], []
 
     with torch.no_grad():
         for inputs, targets in val_loader:
-            inputs, targets = inputs.to(device), targets.to(device)
+            inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
             with torch.cuda.amp.autocast():
                 outputs = model(inputs)
                 outputs = torch.clamp(outputs, 0, 1)
@@ -158,21 +162,22 @@ for epoch in range(start_epoch, epochs):
     avg_val_ssim = np.mean(val_ssim)
     avg_val_density_gt = np.mean(val_density_gt)
     avg_val_density_pred = np.mean(val_density_pred)
+
     print(f"Val MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f} | GT Density: {avg_val_density_gt:.2f} | Pred Density: {avg_val_density_pred:.2f}")
 
-    # ---- Save latest and best model ----
+    # ---- Save Latest & Best ----
     torch.save({
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'val_loss': avg_val_mae
-    }, latest_path)
+    }, LATEST_PATH)
 
     if avg_val_mae < best_val_loss:
         best_val_loss = avg_val_mae
         best_model_path = os.path.join(
-            checkpoint_dir,
-            f"best_model_epoch_{epoch + 1:02d}_val_{avg_val_mae:.4f}.pth"
+            CHECKPOINT_DIR,
+            f"best_model_epoch_{epoch+1:02d}_val_{avg_val_mae:.4f}.pth"
         )
         torch.save({
             'epoch': epoch + 1,
@@ -183,14 +188,13 @@ for epoch in range(start_epoch, epochs):
         print(f"New best model saved: {best_model_path}")
 
     # ---- Early Stopping ----
-    early_stopper(avg_val_mae, model, epoch + 1, optimizer)
+    early_stopper(avg_val_mae, model, epoch+1, optimizer)
     if early_stopper.early_stop:
         print("Early stopping triggered. Training halted.")
         break
 
     scheduler.step()
-    current_lr = scheduler.get_last_lr()[0]
-    print(f"Learning Rate: {current_lr:.6f}")
+    print(f"Learning Rate: {scheduler.get_last_lr()[0]:.6f}")
 
     torch.cuda.empty_cache()
 
