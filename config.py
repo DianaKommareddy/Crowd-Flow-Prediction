@@ -3,7 +3,7 @@
 class Config:
     # Paths
     train_data_path = "dataset/"
-    model_save_path = "restormer_crowd.pth"
+    model_save_path = "hierarchical_cache_attention_model.pth"  # changed name
 
     # Training Parameters
     batch_size = 8
