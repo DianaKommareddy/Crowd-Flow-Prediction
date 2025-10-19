@@ -6,6 +6,7 @@ import torchvision.transforms as transforms
 
 class CustomDataset(Dataset):
     def __init__(self, root_dir, transform=None, target_size=128):
+        
         """
         Args:
             root_dir (str): Root directory containing folders 'A', 'E', 'G', 'Y'
