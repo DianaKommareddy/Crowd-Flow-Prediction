@@ -5,7 +5,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from dataset import CustomDataset
-from models.hierarchical_cache_attention_model import HCAM  # change to RestormerCrowdFlow if needed
+from models.hierarchical_cache_attention_model import HCAM
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
 import piq  # pip install piq
@@ -14,7 +14,7 @@ import piq  # pip install piq
 # EarlyStopping Utility
 # ------------------------
 class EarlyStopping:
-    def __init__(self, patience=7, min_delta=0.0, path='checkpoints/best_model_earlystop.pth', verbose=True):
+    def __init__(self, patience=7, min_delta=0.0, path='checkpoints/best_model.pth', verbose=True):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
@@ -43,7 +43,8 @@ class EarlyStopping:
             'val_loss': val_loss
         }, self.path)
         if self.verbose:
-            print(f"EarlyStopping: Saved best model → {self.path} (val_loss={val_loss:.6f})")
+            print(f"✅ EarlyStopping: Saved best model → {self.path} (val_loss={val_loss:.6f})")
+
 
 # ------------------------
 # Total Variation Loss
@@ -53,14 +54,16 @@ def total_variation_loss(img):
     tv_w = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]))
     return tv_h + tv_w
 
+
 # ------------------------
 # Hyperparameters & Paths
 # ------------------------
 FIXED_SIZE = 128
 BATCH_SIZE = 1
-EPOCHS = 20
+EPOCHS = 50
 LEARNING_RATE = 2e-5
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 CHECKPOINT_DIR = 'checkpoints'
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 LATEST_PATH = os.path.join(CHECKPOINT_DIR, 'latest_model.pth')
@@ -95,7 +98,8 @@ val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, pin_m
 # ------------------------
 # Model, Optimizer, Scheduler, Loss
 # ------------------------
-model = HCAM(dim=32, inp_channels=3, out_channels=1).to(DEVICE)
+model = HCAM(dim=32, inp_channels=9, out_channels=1).to(DEVICE)
+
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=LEARNING_RATE)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
 mae_loss_fn = nn.L1Loss()
@@ -109,7 +113,7 @@ early_stopper = EarlyStopping(patience=10, min_delta=1e-4)
 # ------------------------
 # Mixed Precision
 # ------------------------
-scaler = torch.cuda.amp.GradScaler()
+scaler = torch.amp.GradScaler('cuda')
 
 best_val_loss = float('inf')
 
@@ -117,7 +121,7 @@ best_val_loss = float('inf')
 # Training Loop
 # ------------------------
 for epoch in range(EPOCHS):
-    print(f"\nEpoch [{epoch+1}/{EPOCHS}]")
+    print(f"\n🟢 Epoch [{epoch+1}/{EPOCHS}]")
     model.train()
     train_losses = []
 
@@ -125,7 +129,7 @@ for epoch in range(EPOCHS):
         inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda'):
             outputs = model(inputs)
             outputs = torch.clamp(outputs, 0, 1)
             mae = mae_loss_fn(outputs, targets)
@@ -133,24 +137,34 @@ for epoch in range(EPOCHS):
             ssim_val = piq.ssim(outputs, targets, data_range=1.0)
             tv_loss = total_variation_loss(outputs)
             density_loss = torch.abs(torch.sum(outputs) - torch.sum(targets)) / targets.numel()
-            loss = mae + mse + (1 - ssim_val) + 0.001*tv_loss + 0.05*density_loss
+            loss = mae + mse + (1 - ssim_val) + 0.001 * tv_loss + 0.05 * density_loss
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
         train_losses.append(loss.item())
 
-    avg_train_loss = np.mean(train_losses)
-    print(f"Avg Train Loss: {avg_train_loss:.6f}")
+        # 🔹 Print every step clearly
+        print(
+            f"  Step [{step+1}/{len(train_loader)}] | "
+            f"Loss: {loss.item():.6f} | "
+            f"MAE: {mae.item():.6f} | SSIM: {ssim_val.item():.4f} | "
+            f"TV: {tv_loss.item():.6f} | Dens.Loss: {density_loss.item():.6f}"
+        )
 
-    # ---- Validation ----
+    avg_train_loss = np.mean(train_losses)
+    print(f"📉 Avg Train Loss: {avg_train_loss:.6f}")
+
+    # ------------------------
+    # Validation
+    # ------------------------
     model.eval()
     val_mae, val_ssim, val_density_gt, val_density_pred = [], [], [], []
 
     with torch.no_grad():
         for inputs, targets in val_loader:
             inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = model(inputs)
                 outputs = torch.clamp(outputs, 0, 1)
                 val_mae.append(mae_loss_fn(outputs, targets).item())
@@ -163,9 +177,12 @@ for epoch in range(EPOCHS):
     avg_val_density_gt = np.mean(val_density_gt)
     avg_val_density_pred = np.mean(val_density_pred)
 
-    print(f"Val MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f} | GT Density: {avg_val_density_gt:.2f} | Pred Density: {avg_val_density_pred:.2f}")
+    print(f"🧾 Val MAE: {avg_val_mae:.6f} | SSIM: {avg_val_ssim:.4f} | "
+          f"GT Density: {avg_val_density_gt:.2f} | Pred Density: {avg_val_density_pred:.2f}")
 
-    # ---- Save Latest & Best ----
+    # ------------------------
+    # Save Checkpoints
+    # ------------------------
     torch.save({
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
@@ -185,17 +202,20 @@ for epoch in range(EPOCHS):
             'optimizer_state_dict': optimizer.state_dict(),
             'val_loss': best_val_loss
         }, best_model_path)
-        print(f"New best model saved: {best_model_path}")
+        print(f"💾 New best model saved: {best_model_path}")
 
-    # ---- Early Stopping ----
+    # ------------------------
+    # Early Stopping
+    # ------------------------
     early_stopper(avg_val_mae, model, epoch+1, optimizer)
     if early_stopper.early_stop:
-        print("Early stopping triggered. Training halted.")
+        print("⏹️ Early stopping triggered. Training halted.")
         break
 
+    # Step scheduler
     scheduler.step()
-    print(f"Learning Rate: {scheduler.get_last_lr()[0]:.6f}")
+    print(f"🔹 Learning Rate: {scheduler.get_last_lr()[0]:.6f}")
 
     torch.cuda.empty_cache()
 
-print("\nTraining complete!")
+print("\n✅ Training complete!")
