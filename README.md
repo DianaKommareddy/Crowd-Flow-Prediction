@@ -1,6 +1,14 @@
 # Crowd Flow Prediction
 This project uses a transformer-based model to predict how crowds move in busy scenes. It takes in the positions of agents, the layout of the environment—including walkable and non-walkable areas—and the agents’ goals. Based on this information, the model learns to estimate the likely movement patterns and generates a flow map of the crowd.
 
+# Pretrained Model Checkpoints
+
+If you don’t want to train from scratch, you can download the pretrained model weights here:
+
+## Pretrained Model Checkpoints
+
+If you don’t want to train from scratch, you can download the pretrained model weights here:
+
 ## Project Structure
 <pre lang="md">
 crowd-flow-prediction-using-restormer/
