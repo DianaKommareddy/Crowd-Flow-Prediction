@@ -5,6 +5,9 @@ This project uses a transformer-based model to predict how crowds move in busy s
 
 If you don’t want to train from scratch, you can download the pretrained model weights here:
 
+## Download Link:
+https://drive.google.com/file/d/1tL2TAOKsKVCGguieoOyPd1cLc18-L3mv/view?usp=sharing
+
 ## Pretrained Model Checkpoints
 
 If you don’t want to train from scratch, you can download the pretrained model weights here:
